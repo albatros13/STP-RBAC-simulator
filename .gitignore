@@ -1,0 +1,14 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Generated at run time: run_federation.py (policy.json, launcher.log)
+# and bench/compare_smt.py output
+.runtime/
+bench/results/
+
+# Local tooling
+.idea/
+.claude/settings.local.json
