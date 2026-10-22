@@ -1,0 +1,240 @@
+[{
+  "authorised": true,
+  "request": {
+    "u": "alice",
+    "r": "clinician",
+    "o": "ehr",
+    "p": "care",
+    "l": "EU",
+    "t": 50
+  },
+  "decided_at": "eu-hospital",
+  "phases": [
+    {
+      "node": "coordinator",
+      "enforcement_point": "coordinator",
+      "passed": true,
+      "conjuncts": {
+        "activation": true,
+        "locus": true,
+        "assignment": true,
+        "spatial": true
+      },
+      "first_failure": null
+    },
+    {
+      "node": "eu-hospital",
+      "enforcement_point": "worker",
+      "passed": true,
+      "conjuncts": {
+        "purpose": true,
+        "minimisation": true
+      },
+      "first_failure": null
+    }
+  ],
+  "output": "processed('ehr' for purpose 'care' by role 'clinician') @ region EU [derived from 38 bytes, raw data retained locally]",
+  "denial": null
+},{
+  "authorised": true,
+  "request": {
+    "u": "erin",
+    "r": "coordinator_role",
+    "o": "ehr",
+    "p": "care",
+    "l": "EU",
+    "t": 50
+  },
+  "decided_at": "eu-hospital",
+  "phases": [
+    {
+      "node": "coordinator",
+      "enforcement_point": "coordinator",
+      "passed": true,
+      "conjuncts": {
+        "activation": true,
+        "locus": true,
+        "assignment": true,
+        "spatial": true
+      },
+      "first_failure": null
+    },
+    {
+      "node": "eu-hospital",
+      "enforcement_point": "worker",
+      "passed": true,
+      "conjuncts": {
+        "purpose": true,
+        "minimisation": true
+      },
+      "first_failure": null
+    }
+  ],
+  "output": "processed('ehr' for purpose 'care' by role 'coordinator_role') @ region EU [derived from 38 bytes, raw data retained locally]",
+  "denial": null
+},
+{
+  "authorised": false,
+  "request": {
+    "u": "dan",
+    "r": "auditor",
+    "o": "consent",
+    "p": "audit",
+    "l": "CH",
+    "t": 150
+  },
+  "decided_at": "coordinator",
+  "phases": [
+    {
+      "node": "coordinator",
+      "enforcement_point": "coordinator",
+      "passed": false,
+      "conjuncts": {
+        "activation": false,
+        "locus": true,
+        "assignment": false,
+        "spatial": true
+      },
+      "first_failure": "activation"
+    }
+  ],
+  "output": null,
+  "denial": {
+    "failing_conjunct": "activation",
+    "enforcement_point": "coordinator",
+    "responsible_elements": [
+      "UA(dan,auditor)"
+    ],
+    "all_failures": [
+      "activation",
+      "assignment",
+      "purpose"
+    ],
+    "message": "the role is not active for this user at this time"
+  }
+}, {
+  "authorised": false,
+  "request": {
+    "u": "carol",
+    "r": "analyst",
+    "o": "genome",
+    "p": "research",
+    "l": "EU",
+    "t": 150
+  },
+  "decided_at": "coordinator",
+  "phases": [
+    {
+      "node": "coordinator",
+      "enforcement_point": "coordinator",
+      "passed": false,
+      "conjuncts": {
+        "activation": true,
+        "locus": false,
+        "assignment": true,
+        "spatial": true
+      },
+      "first_failure": "locus"
+    }
+  ],
+  "output": null,
+  "denial": {
+    "failing_conjunct": "locus",
+    "enforcement_point": "coordinator",
+    "responsible_elements": [
+      "rho_U(carol)=['US']",
+      "requested locus=EU"
+    ],
+    "all_failures": [
+      "locus"
+    ],
+    "message": "the user may not operate from this jurisdiction"
+  }
+}, {
+  "authorised": false,
+  "request": {
+    "u": "carol",
+    "r": "analyst",
+    "o": "report",
+    "p": "reporting",
+    "l": "US",
+    "t": 250
+  },
+  "decided_at": "coordinator",
+  "phases": [
+    {
+      "node": "coordinator",
+      "enforcement_point": "coordinator",
+      "passed": false,
+      "conjuncts": {
+        "activation": true,
+        "locus": true,
+        "assignment": true,
+        "spatial": false
+      },
+      "first_failure": "spatial"
+    }
+  ],
+  "output": null,
+  "denial": {
+    "failing_conjunct": "spatial",
+    "enforcement_point": "coordinator",
+    "responsible_elements": [
+      "rho_G(report)=['EU']",
+      "rho_S(report)=['EU', 'UK']",
+      "requested locus=US"
+    ],
+    "all_failures": [
+      "spatial"
+    ],
+    "message": "a governing jurisdiction forbids access, or no replica is reachable"
+  }
+}, {
+  "authorised": false,
+  "request": {
+    "u": "bob",
+    "r": "data_manager",
+    "o": "ehr",
+    "p": "care",
+    "l": "UK",
+    "t": 50
+  },
+  "decided_at": "eu-hospital",
+  "phases": [
+    {
+      "node": "coordinator",
+      "enforcement_point": "coordinator",
+      "passed": true,
+      "conjuncts": {
+        "activation": true,
+        "locus": true,
+        "assignment": true,
+        "spatial": true
+      },
+      "first_failure": null
+    },
+    {
+      "node": "eu-hospital",
+      "enforcement_point": "worker",
+      "passed": false,
+      "conjuncts": {
+        "purpose": false,
+        "minimisation": true
+      },
+      "first_failure": "purpose"
+    }
+  ],
+  "output": null,
+  "denial": {
+    "failing_conjunct": "purpose",
+    "enforcement_point": "worker",
+    "responsible_elements": [
+      "Pi_t(data_manager,ehr)=['anonymisation']",
+      "requested purpose=care"
+    ],
+    "all_failures": [
+      "purpose"
+    ],
+    "message": "the declared purpose is not permitted for this role on this object"
+  }
+}]

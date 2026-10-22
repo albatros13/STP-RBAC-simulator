@@ -1,0 +1,304 @@
+{
+  "policy": {
+    "roles": [
+      "analyst",
+      "auditor",
+      "clinician",
+      "coordinator_role",
+      "data_manager"
+    ],
+    "ua": {
+      "alice": {
+        "clinician": [
+          [
+            0,
+            399
+          ]
+        ]
+      },
+      "bob": {
+        "data_manager": [
+          [
+            0,
+            399
+          ]
+        ]
+      },
+      "carol": {
+        "analyst": [
+          [
+            100,
+            299
+          ]
+        ]
+      },
+      "dan": {
+        "auditor": [
+          [
+            300,
+            399
+          ]
+        ]
+      },
+      "erin": {
+        "coordinator_role": [
+          [
+            0,
+            399
+          ]
+        ]
+      }
+    },
+    "pa": {
+      "analyst": {
+        "genome": [
+          [
+            100,
+            299
+          ]
+        ],
+        "labresults": [
+          [
+            100,
+            299
+          ]
+        ],
+        "report": [
+          [
+            200,
+            299
+          ]
+        ]
+      },
+      "auditor": {
+        "consent": [
+          [
+            300,
+            399
+          ]
+        ],
+        "report": [
+          [
+            300,
+            399
+          ]
+        ]
+      },
+      "clinician": {
+        "ehr": [
+          [
+            0,
+            399
+          ]
+        ],
+        "imaging": [
+          [
+            0,
+            399
+          ]
+        ],
+        "labresults": [
+          [
+            0,
+            399
+          ]
+        ]
+      },
+      "data_manager": {
+        "consent": [
+          [
+            0,
+            399
+          ]
+        ],
+        "ehr": [
+          [
+            0,
+            399
+          ]
+        ],
+        "genome": [
+          [
+            0,
+            399
+          ]
+        ],
+        "imaging": [
+          [
+            0,
+            399
+          ]
+        ]
+      }
+    },
+    "h": {
+      "coordinator_role": {
+        "analyst": [
+          [
+            100,
+            299
+          ]
+        ],
+        "clinician": [
+          [
+            0,
+            399
+          ]
+        ]
+      }
+    },
+    "rho_u": {
+      "alice": [
+        "EU"
+      ],
+      "bob": [
+        "UK"
+      ],
+      "carol": [
+        "US"
+      ],
+      "dan": [
+        "CH"
+      ],
+      "erin": [
+        "EU",
+        "UK"
+      ]
+    },
+    "rho_g": {
+      "consent": [
+        "EU"
+      ],
+      "ehr": [
+        "EU"
+      ],
+      "genome": [
+        "US"
+      ],
+      "imaging": [
+        "EU"
+      ],
+      "labresults": [
+        "UK"
+      ],
+      "report": [
+        "EU"
+      ]
+    },
+    "rho_s": {
+      "consent": [
+        "EU"
+      ],
+      "ehr": [
+        "EU"
+      ],
+      "genome": [
+        "US"
+      ],
+      "imaging": [
+        "EU"
+      ],
+      "labresults": [
+        "UK"
+      ],
+      "report": [
+        "EU",
+        "UK"
+      ]
+    },
+    "gamma": {
+      "CH": [
+        "CH",
+        "EU"
+      ],
+      "EU": [
+        "CH",
+        "EU",
+        "UK",
+        "US"
+      ],
+      "IN": [
+        "IN"
+      ],
+      "UK": [
+        "EU",
+        "UK",
+        "US"
+      ],
+      "US": [
+        "US"
+      ]
+    },
+    "pi": {
+      "analyst": {
+        "genome": [
+          "research"
+        ],
+        "labresults": [
+          "research"
+        ],
+        "report": [
+          "reporting"
+        ]
+      },
+      "auditor": {
+        "consent": [
+          "audit"
+        ],
+        "report": [
+          "audit"
+        ]
+      },
+      "clinician": {
+        "ehr": [
+          "care"
+        ],
+        "imaging": [
+          "care"
+        ],
+        "labresults": [
+          "care"
+        ]
+      },
+      "data_manager": {
+        "consent": [
+          "audit"
+        ],
+        "ehr": [
+          "anonymisation"
+        ],
+        "genome": [
+          "anonymisation"
+        ],
+        "imaging": [
+          "anonymisation"
+        ]
+      }
+    },
+    "delta": {
+      "anonymisation": [
+        "ehr",
+        "genome",
+        "imaging"
+      ],
+      "audit": [
+        "consent",
+        "report"
+      ],
+      "care": [
+        "ehr",
+        "imaging",
+        "labresults"
+      ],
+      "reporting": [
+        "labresults",
+        "report"
+      ],
+      "research": [
+        "genome",
+        "labresults",
+        "report"
+      ]
+    }
+  }
+}

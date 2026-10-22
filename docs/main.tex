@@ -1,0 +1,1078 @@
+\documentclass[11pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage[round]{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+\setlength{\emergencystretch}{2em}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{example}{Example}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{lemma}[theorem]{Lemma}
+
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\newcommand{\Auth}{\mathit{Auth}}
+\newcommand{\RegionOK}{\mathit{RegionAllowed}}
+\newcommand{\PurpOK}{\mathit{PurposeLimited}}
+\newcommand{\MinData}{\mathit{MinData}}
+\newcommand{\LegalOK}{\mathit{LegallyValid}}
+\newcommand{\Act}{\mathit{Act}}
+\newcommand{\SoD}{\mathit{SoD}}
+\newcommand{\Tdom}{\mathbb{T}}
+\newcommand{\Ldom}{\mathcal{L}}
+\newcommand{\Pdom}{\mathcal{P}}
+
+\title{Spatio-Temporal Purpose-Aware RBAC\\ for Federated Data Processing:\\ Model, Analysis, and Verification}
+\author{Natallia Kokash}
+\date{August 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Federated data processing (FDP) networks execute workflows across organisations
+that are subject to different legal regimes, on data whose permitted uses are
+bounded by purpose, jurisdiction, and time. Classical role-based access control
+cannot express these constraints, and the temporal and spatial extensions
+proposed in the literature treat them in isolation. We present STP-RBAC, a
+spatio-temporal purpose-aware access control model in which authorisation is a
+predicate over a user, a role, an object, a declared purpose, a declared
+operating jurisdiction, and a time instant. The model is given a temporal graph
+semantics, and we establish four structural results: authorisation at a fixed
+purpose, jurisdiction, and instant reduces to reachability in a classical RBAC
+snapshot; authorisation is monotone under a policy relaxation order, from which
+compliance verification inherits a downward-closure property that supports
+incremental re-verification when participants join; temporal separation of duty
+reduces to interval stabbing over the arrangement of activation endpoints; and
+workflow feasibility reduces to time-respecting reachability, which is
+polynomial for fixed role assignment and NP-complete once roles may be chosen
+per step. We give an SMT encoding covering all four constraint dimensions, and
+we distinguish policy checking, which is polynomial, from policy synthesis and
+repair, which is not. We close with an evaluation design for the reference
+implementation.
+\end{abstract}
+
+% ============================================================
+\section{Introduction}
+\label{sec:intro}
+
+Federated data processing moves computation to data that cannot be centralised,
+typically because the data are personal, commercially sensitive, or subject to
+localisation requirements. In our earlier work we described an architecture for
+compliance-aware FDP built on the Brane orchestration
+framework~\citep{valkering2021brane}, together with a coordination platform
+that elicits regulatory constraints from participants and helps translate them
+into machine-actionable policies~\citep{kokash2026compliance}. That work
+sketched a formal model, the Spatio-Temporal Purpose-Aware RBAC Graph, but left
+its analysis open. The present paper develops that model into a complete theory
+and specifies how to verify policies expressed in it.
+
+The setting imposes four constraint dimensions that must hold simultaneously.
+Access is granted for a bounded period, because ethics approvals, data use
+agreements, and project phases all expire. Access depends on where the
+requesting participant operates and where the data are governed and stored,
+because adequacy decisions and localisation rules are asymmetric between
+jurisdictions. Access is bound to a declared purpose, because purpose
+limitation is a first-order obligation under the GDPR and comparable regimes.
+Finally, only the objects that the declared purpose actually requires may be
+touched, which is data minimisation. Existing extensions of RBAC address these
+dimensions separately. TRBAC~\citep{bertino2001trbac} and
+GTRBAC~\citep{joshi2005gtrbac} add time; GEO-RBAC~\citep{bertino2005georbac}
+and LoT-RBAC~\citep{chandran2005lotrbac} add location; purpose-based access
+control~\citep{byun2008purpose} adds intent. Combining them is not merely a
+matter of conjoining predicates, because the dimensions interact: role
+hierarchies can launder jurisdictional restrictions, and a policy that is safe
+for each object in isolation can be unsafe for a workflow that touches several
+objects in sequence.
+
+\paragraph{Contributions.} This paper makes the following contributions.
+
+\begin{enumerate}
+  \item A unified model, STP-RBAC (Section~\ref{sec:model}), that adds users,
+        user-role assignment, and a temporally scoped role hierarchy to the
+        graph model of \citet{kokash2026compliance}. Users are necessary rather
+        than cosmetic: separation of duty is a constraint on what one principal
+        may hold, and it cannot be stated in a model whose vertices are only
+        roles and objects.
+  \item A corrected treatment of jurisdiction. We separate the regimes that
+        \emph{govern} an object from the sites that \emph{store} it, and
+        quantify universally over the former and existentially over the latter.
+        The single existential quantifier used in earlier formulations admits a
+        forum-shopping leak, described in Remark~\ref{rem:forum}.
+  \item Four structural results (Section~\ref{sec:results}) with proofs:
+        snapshot reduction, monotonicity under policy relaxation with its
+        downward-closure corollary for compliance, an interval characterisation
+        of temporal separation of duty, and a reduction of workflow feasibility
+        to time-respecting reachability.
+  \item An algorithmic treatment (Section~\ref{sec:algorithms}) with defensible
+        complexity bounds, and an SMT encoding (Section~\ref{sec:smt}) that
+        covers time, space, purpose, and minimisation, separating the
+        polynomial checking problem from the hard synthesis problem.
+  \item A verification architecture (Section~\ref{sec:architecture}) and an
+        evaluation design (Section~\ref{sec:evaluation}) for the reference
+        implementation.
+\end{enumerate}
+
+Section~\ref{sec:related} positions the work, and Section~\ref{sec:conclusion}
+discusses limitations.
+
+% ============================================================
+\section{Setting and Requirements}
+\label{sec:setting}
+
+We summarise the deployment context assumed throughout. An FDP network consists
+of a coordinator and a set of autonomous domains. Data providers hold local
+datasets and run worker nodes that execute approved containerised steps inside
+their own administrative boundary. Data consumers submit workflows to the
+coordinator and receive only authorised outputs. Raw data never leave the
+provider domain. Policies are enforced at two points: the coordinator, which
+sees the workflow and the requesting principal but not the data, and the worker
+node, which sees the request in full context. This split is architectural
+rather than incidental, and Corollary~\ref{cor:split} shows that the model
+respects it.
+
+The following requirements drive the model.
+
+\begin{description}
+  \item[R1 (Bounded validity).] Every assignment carries an explicit validity
+        window, and windows may be discontinuous, since project phases recur.
+  \item[R2 (Asymmetric jurisdiction).] Whether a participant in jurisdiction
+        $\ell$ may process data governed by jurisdiction $\ell'$ is a directed
+        relation reflecting adequacy decisions and bilateral agreements.
+  \item[R3 (Purpose binding).] Every request carries a declared purpose, and
+        authorisation depends on it. Purposes cannot be compiled away, because
+        they vary per request.
+  \item[R4 (Minimisation).] A request may touch only objects that the declared
+        purpose requires.
+  \item[R5 (Workflow-level reasoning).] The unit of interest is often a
+        multi-step workflow rather than a single access, so the model must
+        support feasibility questions over sequences of requests.
+\end{description}
+
+% ============================================================
+\section{The STP-RBAC Model}
+\label{sec:model}
+
+\subsection{Signature}
+
+Fix finite sets $U$ of users, $R$ of roles, $O$ of data objects, $\Ldom$ of
+jurisdictional labels, and $\Pdom$ of processing purposes, together with a
+totally ordered time domain $\Tdom$. Let $\mathcal{I}$ denote the set of finite
+unions of closed intervals over $\Tdom$; a periodic activation expression in the
+sense of GTRBAC~\citep{joshi2005gtrbac} unfolds to an element of $\mathcal{I}$
+over any bounded planning horizon, which is all we require.
+
+\begin{definition}[STP-RBAC policy]
+\label{def:policy}
+An \emph{STP-RBAC policy} is a tuple
+\[
+  \Theta = \bigl(
+    U,\, R,\, O,\, \Ldom,\, \Pdom,\;
+    UA,\, PA,\, H,\;
+    \tau_U,\, \tau_P,\, \tau_H,\;
+    \rho_U,\, \rho_G,\, \rho_S,\, \Gamma,\, \Pi,\, \Delta,\, \SoD
+  \bigr)
+\]
+where
+\begin{itemize}
+  \item $UA \subseteq U \times R$ is the user-role assignment and
+        $\tau_U : UA \to \mathcal{I}$ its validity;
+  \item $PA \subseteq R \times O$ is the permission assignment and
+        $\tau_P : PA \to \mathcal{I}$ its validity;
+  \item $H \subseteq R \times R$ is the role hierarchy, where $(r,r') \in H$
+        means that $r$ is senior to $r'$, and $\tau_H : H \to \mathcal{I}$ is
+        its validity;
+  \item $\rho_U : U \to 2^{\Ldom} \setminus \{\emptyset\}$ gives the
+        jurisdictions from which a user may operate;
+  \item $\rho_G : O \to 2^{\Ldom} \setminus \{\emptyset\}$ gives the
+        jurisdictions whose law \emph{governs} an object;
+  \item $\rho_S : O \to 2^{\Ldom} \setminus \{\emptyset\}$ gives the
+        jurisdictions in which an object is \emph{stored};
+  \item $\Gamma \subseteq \Ldom \times \Ldom$ is the cross-jurisdiction access
+        relation, where $(\ell, \ell') \in \Gamma$ means a participant
+        operating in $\ell$ may process data attached to $\ell'$. $\Gamma$ is
+        reflexive but not assumed symmetric or transitive;
+  \item $\Pi : PA \to 2^{\Pdom}$ gives the purposes for which a role may
+        process an object. Defining $\Pi$ on pairs rather than on roles alone
+        captures object-specific restrictions, for instance an imaging dataset
+        that a data manager may anonymise but not export;
+  \item $\Delta : \Pdom \to 2^{O}$ gives the \emph{purpose-admissible object
+        set}: the objects that purpose $p$ may legitimately require;
+  \item $\SoD \subseteq R \times R$ is an irreflexive, symmetric set of
+        mutually exclusive role pairs.
+\end{itemize}
+\end{definition}
+
+\begin{remark}[Naming of $\Delta$]
+\citet{kokash2026compliance} call $\Delta(p)$ the ``minimal required set'' of
+objects for $p$, while testing $O' \subseteq \Delta(p)$. A minimal set under
+a subset test is the wrong reading, since the test admits any subset including
+the empty one. The predicate is an upper bound on what $p$ may touch, so we
+rename it to purpose-admissible set. The formal content is unchanged; only the
+name was misleading.
+\end{remark}
+
+\subsection{Requests and the temporal authorisation graph}
+
+\begin{definition}[Access request]
+An \emph{access request} is a tuple $q = (u, r, o, p, \ell, t)$ in
+$U \times R \times O \times \Pdom \times \Ldom \times \Tdom$, read as: user $u$,
+acting in role $r$ from jurisdiction $\ell$, requests object $o$ for purpose $p$
+at time $t$.
+\end{definition}
+
+Making $\ell$ part of the request, rather than deriving it from the role, is a
+deliberate change from \citet{kokash2026compliance}. It puts jurisdiction on
+the same footing as purpose: both are declared per request, both are attested by
+the requester, and both are checked rather than assumed. It also removes the
+existential quantifier over the requester's possible locations, which is what
+Remark~\ref{rem:forum} is about.
+
+For an assignment $x$ with validity $\tau(x)$, write
+$\chi_x(t) = 1$ if $t \in \tau(x)$ and $0$ otherwise. The
+\emph{active hierarchy} at time $t$ is
+$H_t = \{(r,r') \in H \mid \chi_{(r,r')}(t) = 1\}$, and $\succeq_t$ denotes the
+reflexive-transitive closure of $H_t$. We require $H$ to be acyclic, so
+$\succeq_t$ is a partial order for every $t$.
+
+\begin{definition}[Effective assignment and effective purposes]
+\label{def:effective}
+The \emph{effective permission assignment} at time $t$ is
+\[
+  PA^{*}_t = \bigl\{ (r,o) \;\big|\;
+    \exists r' \in R:\; r \succeq_t r',\;
+    (r',o) \in PA,\; \chi_{(r',o)}(t) = 1 \bigr\},
+\]
+and the \emph{effective purpose set} of $(r,o) \in PA^{*}_t$ is
+\[
+  \Pi_t(r,o) = \bigcup \bigl\{ \Pi(r',o) \;\big|\;
+    r \succeq_t r',\; (r',o) \in PA,\; \chi_{(r',o)}(t) = 1 \bigr\}.
+\]
+The \emph{activation closure} of a user is
+\[
+  \Act_t(u) = \bigl\{ r \in R \;\big|\;
+    \exists r' :\; (u,r') \in UA,\; \chi_{(u,r')}(t) = 1,\; r' \succeq_t r
+  \bigr\}.
+\]
+\end{definition}
+
+Permissions flow upward through the hierarchy and role membership flows
+downward, which is the standard RBAC reading. What does \emph{not} flow is
+jurisdiction: the spatial check in Definition~\ref{def:auth} is evaluated
+against the jurisdiction $\ell$ declared in the request, never against the
+jurisdiction of an intermediate junior role. This is deliberate and is the point
+of Remark~\ref{rem:launder}.
+
+\begin{definition}[Temporal authorisation graph]
+The \emph{temporal authorisation graph} of $\Theta$ is the directed graph
+$G = (V, E, \tau)$ with $V = U \cup R \cup O$ and
+$E = UA \cup H \cup PA$, each edge labelled by its validity. The
+\emph{snapshot} at $t$ is $G(t) = (V, E_t)$ with
+$E_t = \{ e \in E \mid \chi_e(t) = 1 \}$.
+\end{definition}
+
+Unlike the bipartite graph of \citet{kokash2026compliance}, $G$ is tripartite
+with an intra-role layer, so paths of length greater than one exist and
+reachability is a meaningful question. In the bipartite formulation every path
+has length one and Theorem~4 of that sketch was vacuous.
+
+\subsection{Constraint predicates}
+
+\begin{definition}[Region compatibility]
+\label{def:region}
+A request from jurisdiction $\ell$ is \emph{region-compatible} with object $o$,
+written $\RegionOK(\ell, o)$, iff
+\[
+  \underbrace{\forall \ell_g \in \rho_G(o) : (\ell, \ell_g) \in \Gamma}
+             _{\text{every governing regime permits}}
+  \;\land\;
+  \underbrace{\exists \ell_s \in \rho_S(o) : (\ell, \ell_s) \in \Gamma}
+             _{\text{some replica is reachable}} .
+\]
+\end{definition}
+
+\begin{remark}[Forum shopping under a single existential]
+\label{rem:forum}
+\citet{kokash2026compliance} define region compatibility as
+$\exists \ell_r \in \rho_R(r), \exists \ell_o \in \rho_O(o) : (\ell_r, \ell_o)
+\in \Gamma$, with $\rho_O$ described as the jurisdictions of the object's
+storage locations but used as though it carried the governing regime. Under
+that definition, an object replicated in an adequate and a non-adequate
+jurisdiction is accessible via the adequate replica even when the non-adequate
+regime governs it, and a multinational participant is accessible from whichever
+of its offices happens to be adequate. Definition~\ref{def:region} closes both
+by splitting the two roles of $\rho_O$ and by quantifying universally over
+governance. When $|\rho_G(o)| = 1$ and $\rho_G(o) \subseteq \rho_S(o)$, the two
+definitions coincide, so instances with a single governing regime per object,
+including the running example of that paper, are unaffected.
+\end{remark}
+
+\begin{definition}[Purpose limitation and minimisation]
+For $(r,o) \in PA^{*}_t$, a request satisfies \emph{purpose limitation} iff
+$\PurpOK_t(r,o,p) \iff p \in \Pi_t(r,o)$. A requested object set
+$O' \subseteq O$ satisfies \emph{data minimisation} for purpose $p$ iff
+$\MinData(O',p) \iff O' \subseteq \Delta(p)$; for a single object this is
+$o \in \Delta(p)$.
+\end{definition}
+
+\subsection{Authorisation and compliance}
+
+\begin{definition}[STP-RBAC authorisation]
+\label{def:auth}
+A request $q = (u,r,o,p,\ell,t)$ is \emph{authorised} under $\Theta$, written
+$\Auth_\Theta(q)$, iff all six conditions hold:
+\[
+\begin{aligned}
+  \Auth_\Theta(u,r,o,p,\ell,t) \iff\;
+  & \underbrace{r \in \Act_t(u)}_{\text{activation}}
+  \;\land\;
+    \underbrace{\ell \in \rho_U(u)}_{\text{locus}} \\[4pt]
+  &\land\;
+    \underbrace{(r,o) \in PA^{*}_t}_{\text{effective assignment}}
+  \;\land\;
+    \underbrace{\RegionOK(\ell,o)}_{\text{spatial}} \\[4pt]
+  &\land\;
+    \underbrace{\PurpOK_t(r,o,p)}_{\text{purpose}}
+  \;\land\;
+    \underbrace{o \in \Delta(p)}_{\text{minimisation}} .
+\end{aligned}
+\]
+\end{definition}
+
+Temporal validity does not appear as a separate conjunct because it is carried
+inside $\Act_t$ and $PA^{*}_t$. The structural condition $(r,o) \in PA$ of the
+earlier formulation is likewise subsumed: $PA^{*}_t$ is empty on pairs with no
+assignment, so unassigned pairs are rejected rather than treated as merely
+inactive.
+
+\begin{proposition}[Conservative extension]
+\label{prop:conservative}
+Let $\Theta$ satisfy $|U| = 1$, $H = \emptyset$, $UA = \{u_0\} \times R$ with
+$\tau_U \equiv \Tdom$, $|\rho_U(u_0)| = 1$, and
+$\rho_G(o) = \rho_S(o)$ with $|\rho_G(o)| = 1$ for every $o$. Then for the
+unique admissible $\ell$,
+\[
+  \Auth_\Theta(u_0, r, o, p, \ell, t)
+  \iff
+  \Auth^{\mathrm{prev}}(r,o,p,t),
+\]
+where $\Auth^{\mathrm{prev}}$ is the authorisation predicate of
+\citet{kokash2026compliance}.
+\end{proposition}
+
+\begin{proof}
+Under these restrictions $\Act_t(u_0) = R$ and the locus conjunct is vacuous.
+With $H = \emptyset$ we have $\succeq_t$ = identity, so
+$PA^{*}_t = \{(r,o) \in PA \mid \chi_{(r,o)}(t) = 1\}$ and
+$\Pi_t = \Pi$, which reproduces the assignment and temporal conjuncts. With
+$\rho_G(o) = \rho_S(o)$ a singleton, the universal and existential clauses of
+Definition~\ref{def:region} collapse to the same literal, which is the earlier
+$\RegionOK$. The purpose and minimisation conjuncts are unchanged.
+\end{proof}
+
+Proposition~\ref{prop:conservative} matters because it makes the present model
+a refinement rather than a replacement: policies already written against the
+earlier definitions retain their meaning.
+
+\begin{definition}[Spatio-temporal privacy compliance]
+$\Theta$ is \emph{compliant} with respect to a legality oracle $\LegalOK$ iff
+$\Auth_\Theta(q) \Rightarrow \LegalOK(q)$ for every request $q$. A
+\emph{violation} is a request $q$ with $\Auth_\Theta(q)$ and
+$\neg\LegalOK(q)$.
+\end{definition}
+
+$\LegalOK$ is external to the model. It represents the ground truth that
+regulation, ethics approval, and contract jointly determine, and it is what the
+elicitation pipeline of \citet{kokash2026compliance} approximates. The model's
+job is to make $\Auth_\Theta$ small enough to sit inside it, and the evaluation
+in Section~\ref{sec:evaluation} measures exactly that containment.
+
+% ============================================================
+\section{Structural Results}
+\label{sec:results}
+
+\subsection{Snapshot reduction}
+
+\begin{definition}[Projected snapshot]
+For $t \in \Tdom$, $\ell \in \Ldom$, $p \in \Pdom$, the \emph{projected
+snapshot} is the bipartite-layered graph
+$G(t,\ell,p) = (U \cup R \cup O,\; A_t \cup P_t^{\ell,p})$ with
+\begin{align*}
+  A_t &= \{(u,r) \mid r \in \Act_t(u)\}, \\
+  P_t^{\ell,p} &= \bigl\{ (r,o) \in PA^{*}_t \;\big|\;
+      \RegionOK(\ell,o) \land p \in \Pi_t(r,o) \land o \in \Delta(p) \bigr\}.
+\end{align*}
+\end{definition}
+
+\begin{theorem}[Snapshot reduction]
+\label{thm:snapshot}
+For every $u, r, o$ and every fixed $(t,\ell,p)$ with $\ell \in \rho_U(u)$,
+\[
+  \Auth_\Theta(u,r,o,p,\ell,t)
+  \iff
+  (u,r) \in A_t \;\land\; (r,o) \in P_t^{\ell,p},
+\]
+that is, iff $u$ reaches $o$ by a path of length two in $G(t,\ell,p)$.
+Consequently $G(t,\ell,p)$ is a classical RBAC instance in the sense of
+\citet{sandhu1996rbac}, with user assignment $A_t$ and permission assignment
+$P_t^{\ell,p}$, and every decision procedure for flat RBAC applies to it
+unchanged.
+\end{theorem}
+
+\begin{proof}
+Immediate by unfolding Definition~\ref{def:auth}: the first conjunct is
+membership in $A_t$, the locus conjunct holds by assumption, and the remaining
+four conjuncts are exactly the defining conditions of $P_t^{\ell,p}$. Length-two
+paths in a graph whose only edges run $U \to R$ and $R \to O$ are precisely
+pairs of such edges sharing their middle vertex.
+\end{proof}
+
+This is the statement that Theorem~1 of the earlier sketch intended. That
+version wrote $G(t,s,p)$ with an undefined parameter $s$ and asserted
+equivalence to classical RBAC without specifying the projection, so it could not
+be proved as stated.
+
+\begin{corollary}[Soundness and completeness of two-phase enforcement]
+\label{cor:split}
+Define the coordinator prefilter
+$G^{\mathrm{ST}}(t,\ell) = \{(r,o) \in PA^{*}_t \mid \RegionOK(\ell,o)\}$,
+computed without knowledge of $p$, and let the worker node accept
+$(r,o) \in G^{\mathrm{ST}}(t,\ell)$ iff
+$p \in \Pi_t(r,o) \land o \in \Delta(p)$. The composite decision equals
+$\Auth_\Theta$ exactly: no authorised request is filtered out, and no
+unauthorised request survives both phases.
+\end{corollary}
+
+\begin{proof}
+$\Auth_\Theta$ is a conjunction, and the two phases partition its conjuncts
+into those independent of $p$ and those dependent on $p$. Conjunction is
+associative, so the split preserves the value.
+\end{proof}
+
+Corollary~\ref{cor:split} is the formal justification for the deployment
+architecture of \citet{kokash2026compliance}, in which temporal and spatial
+gating happens centrally and purpose gating happens at the data provider. It
+also delimits what the coordinator learns: it evaluates a purpose-independent
+predicate, so it need not be told why a workflow step wants an object.
+
+\subsection{Monotonicity and downward closure of compliance}
+
+\begin{definition}[Relaxation order]
+\label{def:relax}
+For policies $\Theta, \Theta'$ over the same $U, R, O, \Ldom, \Pdom$, write
+$\Theta \sqsubseteq \Theta'$ ($\Theta'$ \emph{relaxes} $\Theta$) iff
+\begin{enumerate}
+  \item[(i)] $UA \subseteq UA'$, \; $PA \subseteq PA'$, \; $H \subseteq H'$;
+  \item[(ii)] $\tau_U(x) \subseteq \tau'_U(x)$, \; $\tau_P(x) \subseteq
+        \tau'_P(x)$, \; $\tau_H(x) \subseteq \tau'_H(x)$, pointwise on the
+        smaller domain;
+  \item[(iii)] $\Gamma \subseteq \Gamma'$, \; $\rho_U(u) \subseteq \rho'_U(u)$,
+        \; $\Pi(r,o) \subseteq \Pi'(r,o)$, \; $\Delta(p) \subseteq \Delta'(p)$;
+  \item[(iv)] $\rho'_G(o) \subseteq \rho_G(o)$ \; and \;
+        $\rho_S(o) \subseteq \rho'_S(o)$.
+\end{enumerate}
+\end{definition}
+
+Note the reversal on $\rho_G$. Governing regimes appear under a universal
+quantifier, so \emph{removing} one weakens the gate; every other component
+appears positively and is relaxed by enlargement. This asymmetry is easy to get
+wrong and is the reason the informal claim ``extending validity intervals,
+purpose scope or spatial area never removes permissions'' in the earlier draft
+is not correct as stated: enlarging $\rho_G$ removes permissions.
+
+\begin{theorem}[Monotonicity]
+\label{thm:monotone}
+If $\Theta \sqsubseteq \Theta'$ then
+$\Auth_\Theta(q) \Rightarrow \Auth_{\Theta'}(q)$ for every request $q$.
+\end{theorem}
+
+\begin{proof}
+We show each conjunct of Definition~\ref{def:auth} is monotone in
+$\sqsubseteq$.
+
+\emph{Activation.} $UA \subseteq UA'$ and $\tau_U \subseteq \tau'_U$ give
+$\chi^{\Theta}_{(u,r')}(t) \le \chi^{\Theta'}_{(u,r')}(t)$. Since
+$H \subseteq H'$ and $\tau_H \subseteq \tau'_H$, we get
+$H_t \subseteq H'_t$ and hence ${\succeq_t} \subseteq {\succeq'_t}$, because the
+reflexive-transitive closure is monotone in its argument. Therefore
+$\Act_t(u) \subseteq \Act'_t(u)$.
+
+\emph{Locus.} $\rho_U(u) \subseteq \rho'_U(u)$ directly.
+
+\emph{Effective assignment and purposes.} $PA \subseteq PA'$,
+$\tau_P \subseteq \tau'_P$, and ${\succeq_t} \subseteq {\succeq'_t}$ give
+$PA^{*}_t \subseteq PA'^{*}_t$; the union defining $\Pi_t$ is over a larger
+index set of larger sets, so $\Pi_t(r,o) \subseteq \Pi'_t(r,o)$.
+
+\emph{Spatial.} Suppose $\RegionOK^{\Theta}(\ell,o)$. For the universal clause,
+$\rho'_G(o) \subseteq \rho_G(o)$ means the clause ranges over fewer labels, and
+$\Gamma \subseteq \Gamma'$ means each surviving obligation is still met. For the
+existential clause, the witness $\ell_s \in \rho_S(o)$ lies in
+$\rho'_S(o)$ and $(\ell,\ell_s) \in \Gamma \subseteq \Gamma'$.
+
+\emph{Purpose and minimisation.} Immediate from
+$\Pi_t \subseteq \Pi'_t$ and $\Delta(p) \subseteq \Delta'(p)$.
+\end{proof}
+
+\begin{corollary}[Compliance is downward closed]
+\label{cor:downward}
+If $\Theta \sqsubseteq \Theta'$ and $\Theta'$ is compliant, then $\Theta$ is
+compliant.
+\end{corollary}
+
+\begin{proof}
+Contrapositive of Theorem~\ref{thm:monotone}: if $q$ violates $\Theta$ then
+$\Auth_\Theta(q)$, hence $\Auth_{\Theta'}(q)$, and $\neg\LegalOK(q)$ is
+independent of the policy, so $q$ violates $\Theta'$.
+\end{proof}
+
+Corollary~\ref{cor:downward} has an operational reading that we exploit in
+Section~\ref{sec:evaluation}. Verify once against the most permissive envelope
+a project will ever adopt. Thereafter, any change that only tightens the policy,
+which covers most onboarding events, needs no re-verification. Only relaxations
+trigger a re-check, and the check can be restricted to the difference. This
+turns full re-verification on every participant join into an incremental
+operation.
+
+\subsection{Temporal separation of duty}
+
+The earlier draft defined a conflict predicate over
+$\Auth(r_1,o_1,t) \land \Auth(r_2,o_2,t)$ and concluded that a conflict exists
+iff the corresponding validity intervals intersect. That statement is not
+well-formed: separation of duty constrains what a single principal may hold, and
+with no users in the signature there is nothing to bind $r_1$ and $r_2$
+together. Two different people holding conflicting roles at the same time is
+normal operation, not a violation. The corrected statement follows.
+
+\begin{definition}[Temporal SoD violation]
+$\Theta$ admits a \emph{temporal SoD violation} iff there exist $u \in U$,
+$(r_1,r_2) \in \SoD$, and $t \in \Tdom$ with
+$r_1, r_2 \in \Act_t(u)$.
+\end{definition}
+
+\begin{lemma}[Piecewise constancy]
+\label{lem:breakpoints}
+Let $B \subset \Tdom$ be the set of endpoints of the constituent intervals of
+all $\tau_U$ and $\tau_H$ labels, and let $\mathcal{A}$ be the arrangement of
+$\Tdom$ induced by $B$, that is, the partition into maximal subintervals
+containing no point of $B$ in their interior. Then $t \mapsto \Act_t(u)$ is
+constant on each cell of $\mathcal{A}$, for every $u$.
+\end{lemma}
+
+\begin{proof}
+$\Act_t(u)$ depends on $t$ only through the family of indicators
+$\{\chi_{(u,r')}(t)\}$ and $\{\chi_{(r,r')}(t)\}$, since $\succeq_t$ is a
+function of $H_t$ alone. Each indicator is the characteristic function of a
+finite union of closed intervals with endpoints in $B$, hence constant on the
+interior of every cell of $\mathcal{A}$ and on every degenerate cell
+$\{b\}$, $b \in B$. A constant family yields a constant closure.
+\end{proof}
+
+\begin{theorem}[SoD reduces to interval stabbing]
+\label{thm:sod}
+Let $N = |UA| + |H|$ counted with interval multiplicity. A temporal SoD
+violation exists iff one exists at some point of a set of at most $2N$
+candidate instants, namely one representative per cell of $\mathcal{A}$. In the
+hierarchy-free case $H = \emptyset$, a violation exists iff there are
+$u$ and $(r_1,r_2) \in \SoD$ with
+$\tau_U(u,r_1) \cap \tau_U(u,r_2) \neq \emptyset$, which for constituent
+intervals $[a_1,b_1]$ and $[a_2,b_2]$ holds iff
+$\max(a_1,a_2) \le \min(b_1,b_2)$.
+\end{theorem}
+
+\begin{proof}
+By Lemma~\ref{lem:breakpoints}, $\Act_t(u)$ takes at most $2N$ distinct values
+as $t$ ranges over $\Tdom$, one per cell, so it suffices to test one
+representative per cell; $|\mathcal{A}| \le 2N+1$ and the unbounded outer cells
+have empty activation. For $H = \emptyset$ we have
+$\Act_t(u) = \{r \mid (u,r) \in UA, \chi_{(u,r)}(t) = 1\}$, so
+$r_1, r_2 \in \Act_t(u)$ for some $t$ iff the two validity sets share a point,
+and two closed intervals share a point exactly under the stated inequality.
+\end{proof}
+
+Theorem~\ref{thm:sod} is what makes SoD checking a sweep-line problem rather
+than a search over $\Tdom$: sort the $2N$ endpoints, maintain the active set
+incrementally, and test the $\SoD$ pairs against it. Section~\ref{sec:algorithms}
+gives the bound.
+
+\subsection{Workflow feasibility}
+
+Definition~\ref{def:auth} answers a question about one instant. Requirement R5
+asks a different question: given a workflow whose steps have their own role,
+object, purpose, and location demands, and a precedence order among them, can
+the workflow run at all? The earlier draft invoked time-respecting paths in the
+sense of \citet{holme2012temporal} for the single-access case, which is a
+category error. A single authorisation needs all its edges live
+\emph{simultaneously}, which is Theorem~\ref{thm:snapshot}, a statement about a
+snapshot. Time-respecting paths are the right notion for workflows, where a
+later step may rely on a permission that was not yet active when an earlier step
+ran.
+
+\begin{definition}[Workflow]
+A \emph{workflow} is $W = (S, \prec, \mathit{dem})$ where $S$ is a finite set of
+steps, $\prec$ is a strict partial order on $S$ given as a DAG, and
+$\mathit{dem}(s) = (u_s, r_s, o_s, p_s, \ell_s)$ gives the demand of step $s$. A
+\emph{schedule} is $\sigma : S \to \Tdom$ with $s \prec s' \Rightarrow
+\sigma(s) < \sigma(s')$. $W$ is \emph{feasible} under $\Theta$ iff some schedule
+$\sigma$ satisfies $\Auth_\Theta(u_s, r_s, o_s, p_s, \ell_s, \sigma(s))$ for
+every $s \in S$.
+\end{definition}
+
+\begin{theorem}[Workflow feasibility]
+\label{thm:workflow}
+Let $F_s = \{ t \mid \Auth_\Theta(u_s,r_s,o_s,p_s,\ell_s,t) \} \in \mathcal{I}$
+be the feasible window of step $s$, a finite union of at most $m$ intervals.
+Then:
+\begin{enumerate}
+  \item $W$ is feasible iff there is a time-respecting path through the
+        step-expanded graph, and feasibility is decidable in
+        $O\bigl((|S| + |{\prec}|)\, m \log m\bigr)$ time by earliest-start
+        propagation in topological order, which additionally returns the
+        pointwise-earliest feasible schedule.
+  \item If step demands specify a \emph{set} of admissible roles per step rather
+        than a single role, and $\SoD$ constraints are imposed across steps,
+        deciding feasibility is NP-complete.
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+(1) $F_s$ is computable from Definition~\ref{def:auth} because each conjunct is
+either time-independent or a finite union of intervals, and finite unions are
+closed under intersection. Process $S$ in topological order maintaining
+$e(s) = $ earliest feasible start. Set
+$e(s) = \min \{ t \in F_s \mid t > \max_{s' \prec s} e(s') \}$, computed by
+binary search in the sorted interval list of $F_s$, and report infeasible if no
+such $t$ exists. Earliest-start propagation on a DAG is optimal for this
+constraint shape by the standard exchange argument: if any feasible schedule
+exists, the pointwise-earliest one is feasible, since delaying a predecessor can
+only shrink the admissible set of a successor. Each step performs one binary
+search over $m$ intervals, and each precedence edge is relaxed once.
+
+(2) Membership in NP is clear: a schedule together with a role assignment is a
+polynomial certificate checkable by (1). Hardness follows by reduction from the
+workflow satisfiability problem, which \citet{wang2010wsp} show is NP-complete
+even without a temporal dimension. Given a WSP instance, take $\Tdom$ a single
+instant, $\Gamma$ total, $\Pi$ and $\Delta$ unconstrained, all validity windows
+equal to $\Tdom$, and $\prec$ empty; then feasibility of $W$ holds exactly when
+the WSP instance is satisfiable. The construction is polynomial.
+\end{proof}
+
+Part (2) explains why the earlier draft's complexity table could not be right.
+The table listed static consistency as ``NP-complete (interval arithmetic is
+polytime, but with hierarchy becomes NP-hard)'', conflating two different
+problems and two different sources of hardness. Hardness does not come from the
+hierarchy, which only adds a transitive closure. It comes from choice: as long
+as every step's principal and role are fixed, everything is polynomial. As soon
+as the policy must be searched for an assignment, the problem inherits WSP
+hardness. Fixed-parameter results for WSP in the number of
+steps~\citep{crampton2013wspseniority} carry over and are the practical route.
+
+% ============================================================
+\section{Algorithms and Complexity}
+\label{sec:algorithms}
+
+Let $n = |U| + |R| + |O|$, let $M = |UA| + |PA| + |H|$ counted with interval
+multiplicity, and let $k = |\SoD|$. We assume each edge's validity is stored as
+a sorted list of disjoint intervals, and that an interval tree over all validity
+intervals is built once in $O(M \log M)$.
+
+\begin{description}
+  \item[A1: Authorisation query.] Given $q$, decide $\Auth_\Theta(q)$. With the
+        interval tree and a precomputed $\succeq_t$ for the current cell of
+        $\mathcal{A}$, this is $O(\log M + d)$ where $d$ is the number of roles
+        junior to $r$ that hold $o$. Without precomputation it is
+        $O(|H| + \log M)$, dominated by the closure walk. The earlier draft's
+        $O(\log n)$ holds only for the hierarchy-free case with a single
+        candidate edge.
+  \item[A2: SoD conflict detection.] Report all temporal SoD violations. Sort
+        the $2M$ endpoints, sweep, and maintain $\Act_t(u)$ incrementally per
+        user. Testing $\SoD$ pairs against the active set at each of the $O(M)$
+        breakpoints gives $O(M \log M + Mk)$ in the worst case, and
+        $O(M \log M + Z)$ output-sensitive when $\SoD$ is indexed by role, where
+        $Z$ is the number of reported violations. The earlier draft's nested
+        loop over $PA \times PA$ is $O(|PA|^2)$ and also tests the wrong
+        condition, since it does not quantify over users.
+  \item[A3: Workflow feasibility, fixed roles.] Theorem~\ref{thm:workflow}(1),
+        $O((|S| + |{\prec}|) m \log m)$.
+  \item[A4: Policy consistency.] Check well-formedness: every validity set is
+        non-empty and each constituent interval satisfies $t^s \le t^e$; $H$ is
+        acyclic; $\Pi(r,o) \neq \emptyset$ for every $(r,o) \in PA$; and
+        $\Pi(r,o) \subseteq \{p \mid o \in \Delta(p)\}$, that is, no permission
+        grants a purpose that minimisation will always deny. This last check is
+        worth stating separately because such a pair is dead policy: it can
+        never authorise anything and almost always indicates an authoring error.
+        All checks are $O(M + |PA| \cdot |\Pdom|)$.
+  \item[A5: Reachability envelope.] Compute, for a given $(\ell,p)$, the set of
+        objects any user can reach over a horizon. Union the projected snapshots
+        over the cells of $\mathcal{A}$, $O(M \log M + M n)$ in the worst case.
+\end{description}
+
+Table~\ref{tab:complexity} summarises. The essential distinction, absent from
+the earlier draft, is between \emph{checking} a fully instantiated policy, which
+is polynomial throughout, and \emph{searching} for interval assignments or role
+assignments, which is not.
+
+\begin{table}[t]
+\centering
+\caption{Complexity of the analysis problems. $M$ is the number of assignment
+edges counted with interval multiplicity, $Z$ the output size. The last row is
+not our result and is quoted from \citet{sasturkar2011arbac}.}
+\label{tab:complexity}
+\small
+\begin{tabular}{llll}
+\toprule
+\textbf{Problem} & \textbf{Input} & \textbf{Complexity} & \textbf{Method} \\
+\midrule
+Authorisation query   & ground policy & $O(\log M + d)$        & interval tree \\
+SoD detection         & ground policy & $O(M\log M + Z)$       & sweep line \\
+Workflow feasibility  & fixed roles   & $O((|S|+|{\prec}|)m\log m)$ & DAG propagation \\
+Workflow feasibility  & role choice   & NP-complete            & SMT / FPT in $|S|$ \\
+Policy consistency    & ground policy & $O(M + |PA||\Pdom|)$   & direct \\
+Interval synthesis    & free windows  & NP-hard                & SMT \\
+Admin.\ reachability  & ARBAC         & PSPACE-complete        & symbolic \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+\section{SMT Encoding}
+\label{sec:smt}
+
+We give an encoding into quantifier-free linear integer arithmetic with
+uninterpreted predicates, discharged by Z3~\citep{demoura2008z3}. The earlier
+draft encoded only the temporal dimension and left the spatial and purpose
+dimensions as a TODO; the encoding below covers all four. We assume $\Tdom$
+discrete, which is standard for policy horizons measured in days or months.
+
+\paragraph{Two modes.} The same encoding serves two problems, and keeping them
+apart is what resolves the complexity confusion noted above.
+\emph{Checking} fixes every interval endpoint as a numeral and asks whether a
+property holds; the resulting formula is ground and decided in polynomial time.
+\emph{Synthesis and repair} leaves endpoints as free integer variables and asks
+for a model; this is where NP-hardness enters, since forbidden-overlap
+constraints are negated conjunctions of linear inequalities and a set of them
+encodes propositional satisfiability directly.
+
+\paragraph{Variables.} For each $x \in UA \cup PA \cup H$ with constituent
+interval index $j$, integers $a_{x,j}, b_{x,j}$ with the well-formedness
+constraint $a_{x,j} \le b_{x,j}$. Booleans $\Gamma_{\ell,\ell'}$ for the
+jurisdiction relation, $\Pi_{r,o,p}$ for purposes, $\Delta_{p,o}$ for
+minimisation, $\rho^{G}_{o,\ell}$ and $\rho^{S}_{o,\ell}$ for governance and
+storage, and $\rho^{U}_{u,\ell}$ for the user locus. In checking mode all
+Booleans are fixed by the policy.
+
+\paragraph{Activation.} $\mathit{live}_x(t) \leftrightarrow
+\bigvee_j (a_{x,j} \le t \land t \le b_{x,j})$.
+
+\paragraph{Hierarchy closure.} Introduce $\mathit{Sen}_{r,r'}(t)$ with the
+Horn rules
+\[
+  \mathit{Sen}_{r,r}(t), \qquad
+  \mathit{Sen}_{r,r''}(t) \leftarrow
+    \mathit{Sen}_{r,r'}(t) \land \mathit{live}_{(r',r'')}(t),
+\]
+which the fixed-point engine of Z3 discharges directly. For a bounded role
+depth $D$, the rules may instead be unrolled $D$ times into quantifier-free
+form, which is preferable when the rest of the query is ground.
+
+\paragraph{Spatial predicate.}
+\[
+  \RegionOK_{o,\ell}
+  \;\leftrightarrow\;
+  \Bigl(\bigwedge_{\ell_g \in \Ldom}
+      \bigl(\rho^{G}_{o,\ell_g} \rightarrow \Gamma_{\ell,\ell_g}\bigr)\Bigr)
+  \;\land\;
+  \Bigl(\bigvee_{\ell_s \in \Ldom}
+      \bigl(\rho^{S}_{o,\ell_s} \land \Gamma_{\ell,\ell_s}\bigr)\Bigr).
+\]
+
+\paragraph{Authorisation.}
+\[
+\begin{aligned}
+  \Auth_{u,r,o,p,\ell}(t) \;\leftrightarrow\;
+  & \Bigl(\bigvee_{r' \in R}
+      \mathit{live}_{(u,r')}(t) \land \mathit{Sen}_{r',r}(t)\Bigr)
+    \;\land\; \rho^{U}_{u,\ell} \\[4pt]
+  &\land\;
+    \Bigl(\bigvee_{r'' \in R}
+      \mathit{Sen}_{r,r''}(t) \land \mathit{live}_{(r'',o)}(t)
+      \land \Pi_{r'',o,p}\Bigr) \\[4pt]
+  &\land\; \RegionOK_{o,\ell} \;\land\; \Delta_{p,o}.
+\end{aligned}
+\]
+The third conjunct fuses effective assignment with effective purpose, since both
+quantify over the same junior role $r''$. Splitting them, as a naive
+transcription of Definition~\ref{def:effective} would, is unsound: it would
+allow the assignment witness and the purpose witness to be different roles.
+
+\paragraph{Queries.} Each analysis problem becomes a satisfiability query.
+\begin{itemize}
+  \item \emph{Unauthorised access}: assert $\Auth_{u,r,o,p,\ell}(t)$ for a
+        request the policy author believes forbidden; a model is a
+        counterexample.
+  \item \emph{Temporal SoD}: assert
+        $\exists t: \bigvee_{r'} \mathit{live}_{(u,r')}(t) \land
+        \mathit{Sen}_{r',r_1}(t)$ conjoined with the same for $r_2$, over
+        $(r_1,r_2) \in \SoD$.
+  \item \emph{Dead permission}: assert
+        $\neg \exists t,\ell : \Auth_{u,r,o,p,\ell}(t)$ for each
+        $(r,o) \in PA$ and $p \in \Pi(r,o)$; unsatisfiability of the negation
+        certifies the permission is reachable.
+  \item \emph{Repair}: fix the Boolean policy structure, free the interval
+        endpoints, assert the desired safety properties plus the availability
+        properties the project needs, and minimise total window shrinkage as an
+        optimisation objective.
+\end{itemize}
+
+\begin{remark}
+Purpose limitation and minimisation are the only dimensions expressible without
+arithmetic. A deployment that needs only these should use a
+policy-as-code engine such as OPA/Rego~\citep{opa} rather than an SMT solver,
+which is the pragmatic reading of Table~\ref{tab:verification}: the solver earns
+its cost only when interval reasoning or synthesis is involved.
+\end{remark}
+
+% ============================================================
+\section{Verification Architecture}
+\label{sec:architecture}
+
+Table~\ref{tab:verification} maps model constructs to tooling. Each row states
+what the component decides and what it cannot decide, since a mapping that
+lists technologies without their scope invites the reader to assume more
+coverage than exists.
+
+\begin{table}[t]
+\centering
+\caption{Verification components and their scope.}
+\label{tab:verification}
+\small
+\begin{tabular}{p{2.4cm}p{5.2cm}p{4.6cm}}
+\toprule
+\textbf{Component} & \textbf{Decides} & \textbf{Technology and scope} \\
+\midrule
+Policy model &
+Serialisation of $\Theta$; well-formedness A4 &
+JSON Schema plus graph store; syntactic only \\
+\addlinespace
+Constraint engine &
+Interval satisfiability, SoD, dead permissions, repair &
+Z3~\citep{demoura2008z3}; ground checking polynomial, synthesis NP-hard \\
+\addlinespace
+Bounded consistency &
+Structural counterexamples over small scopes &
+Alloy~\citep{jackson2002alloy}; small-scope only, no proof of absence \\
+\addlinespace
+Temporal properties &
+Safety and liveness over policy evolution &
+NuSMV~\citep{cimatti2002nusmv} or TLA$^{+}$~\citep{lamport2002tla}; requires a finite abstraction of $\Tdom$ \\
+\addlinespace
+Runtime enforcement &
+Per-request $\Auth_\Theta$ at coordinator and worker &
+OPA/Rego~\citep{opa} and the Brane policy reasoner~\citep{kokash2024reasoner} \\
+\addlinespace
+Explanation &
+Which conjunct failed and which policy element caused it &
+Unsat cores and Z3 proofs, rendered to text \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The explanation layer deserves comment because it is where a formal model earns
+its keep for non-specialist users. Definition~\ref{def:auth} is a conjunction of
+six named conjuncts, so a denial always has an identifiable cause, and
+Corollary~\ref{cor:split} tells us which node observed it. A denial can
+therefore be reported as ``the request was refused at the provider because the
+declared purpose is not among those permitted for this role on this object'',
+with the offending $\Pi(r,o)$ entry attached. We treat natural-language
+rendering of this structured diagnosis as a presentation concern, not a
+reasoning one: the diagnosis itself comes from the unsat core, not from a
+language model.
+
+% ============================================================
+\section{Evaluation Design}
+\label{sec:evaluation}
+
+The claims that require empirical support are: that the model expresses the
+constraints real FDP projects impose (expressiveness); that checking is fast
+enough for the coordinator to sit on the request path (performance); that the
+incremental strategy licensed by Corollary~\ref{cor:downward} actually pays
+(incrementality); and that the diagnostics are usable by the people who author
+policies (usability). We evaluate each against a stated baseline.
+
+\paragraph{E1: Expressiveness.} Encode the pharmaceutical and hospital
+collaboration scenario of \citet{kokash2026compliance}, which has five roles,
+six object classes, five purposes, four project phases, and five jurisdictions,
+together with two further scenarios drawn from published federated healthcare
+deployments. Report the fraction of stated constraints expressible in $\Theta$
+without extension, and characterise the residue. We expect obligations and
+consent revocation to fall outside, since STP-RBAC is a permission model and not
+a normative one in the sense of eFLINT~\citep{binsbergen2020eflint}.
+
+\paragraph{E2: Checking performance.} Measure A1, A2, and A4 on synthetic
+policies scaling $|R|$, $|O|$, and interval multiplicity independently, against
+a naive baseline that evaluates $\Auth$ by linear scan. Report median and
+tail latency for A1, since coordinator admission is on the critical path.
+
+\paragraph{E3: Solver scaling.} Measure Z3 runtime for the four query classes of
+Section~\ref{sec:smt} as policy size grows, separately in checking and synthesis
+mode. The hypothesis under test is that the two modes have visibly different
+scaling curves, which is the empirical counterpart of the complexity
+distinction.
+
+\paragraph{E4: Incrementality.} Simulate participant onboarding sequences and
+compare full re-verification against the incremental strategy: classify each
+policy delta as a tightening or a relaxation under Definition~\ref{def:relax},
+skip verification on tightenings, and verify only the difference on relaxations.
+Report the fraction of onboarding events that are pure tightenings and the
+resulting reduction in solver invocations. This experiment directly measures the
+value of Corollary~\ref{cor:downward}, and it fails informatively: if most real
+deltas turn out to be relaxations, the corollary is sound but operationally
+uninteresting.
+
+\paragraph{E5: Fault injection.} Seed policies with the four defect classes the
+model is meant to catch (expired window still granting access, cross-border
+grant with no $\Gamma$ edge, purpose creep, minimisation violation) and measure
+detection rate and time to detection. Include the two defects the corrected
+model catches but the earlier formulation did not, namely the forum-shopping
+pattern of Remark~\ref{rem:forum} and the hierarchy-laundering pattern of
+Remark~\ref{rem:launder}, and confirm that the earlier formulation misses them.
+
+\paragraph{E6: Diagnostic usability.} Present denial diagnoses to participants
+in the two roles that matter, data stewards and workflow authors, and measure
+whether they identify the responsible policy element and propose a correct fix.
+Compare structured diagnoses against a raw solver trace.
+
+Section~\ref{sec:conclusion} notes which of these are complete.
+
+\begin{remark}[Hierarchy laundering]
+\label{rem:launder}
+Consider $r_{\mathrm{senior}} \succeq_t r_{\mathrm{junior}}$ where the junior
+role's holders operate in an adequate jurisdiction and the senior role's holders
+do not. Under a model that evaluates region compatibility against the role
+whose permission is being inherited, the senior role acquires cross-border
+access it could not have been granted directly. Definition~\ref{def:auth} avoids
+this by evaluating $\RegionOK$ against the requester's declared $\ell$ alone,
+independently of the inheritance path. This is why $\ell$ belongs to the request
+rather than to the role.
+\end{remark}
+
+% ============================================================
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Temporal RBAC.} \citet{bertino2001trbac} introduced TRBAC,
+associating time constraints with role enabling and permission assignment, with
+periodic schedules, calendar expressions, and temporal separation of duty. The
+enabled role-permission relation at time $t$ is the direct ancestor of our
+$\chi_e(t)$ and of the snapshot $G(t)$. Earlier work on temporal authorisation
+bases~\citep{bertino2000tab} established interval-based authorisation
+propagation. \citet{joshi2005gtrbac} generalised TRBAC to cover role enabling,
+role activation, and permission assignment simultaneously, with triggered events
+and a temporal-logic semantics. Our $\tau_U$, $\tau_P$, and $\tau_H$ correspond
+to GTRBAC's three constraint families, and our restriction to finite unions of
+intervals is the bounded-horizon unfolding of their periodic expressions.
+
+\paragraph{Spatial and spatio-temporal RBAC.} GEO-RBAC~\citep{bertino2005georbac}
+makes role activation depend on the user's position within spatial extents.
+LoT-RBAC~\citep{chandran2005lotrbac} and the model of
+\citet{ray2007strbac} combine location and time.
+\citet{toahchoodee2009alloy} analyse a spatio-temporal model in Alloy. Our
+spatial dimension differs in kind rather than degree: these models treat
+location as physical position, whereas $\Gamma$ is a legal relation over
+jurisdictions, asymmetric because adequacy decisions are, and attached to
+objects in two distinct ways (governance and storage) because data localisation
+and data governance are separate obligations. To our knowledge the
+governance-versus-storage distinction has not been made in this literature.
+
+\paragraph{Purpose-based access control.} \citet{byun2008purpose} associate
+intended purposes with data elements and access purposes with requests,
+supporting explicit prohibitions and purpose hierarchies. Our $\Pi$ is their
+intended-purpose labelling lifted to role-object pairs, and $\Delta$ adds the
+minimisation direction, which their model does not address. A purpose hierarchy
+would be a natural extension of $\Pi$ and is left to future work.
+
+\paragraph{Policy analysis and verification.} \citet{sasturkar2011arbac}
+establish that user-role reachability under administrative RBAC is
+PSPACE-complete, with tractable fragments under restrictions.
+\citet{uzun2012trbacanalysis} and \citet{jha2014trbacadmin} extend safety
+analysis to the temporal setting, and \citet{ranise2014atrbac} give scalable
+symbolic procedures for administrative TRBAC.
+\citet{mondal2009timedautomata} analyse GTRBAC via timed automata.
+\citet{wang2010wsp} establish NP-completeness of the workflow satisfiability
+problem, which Theorem~\ref{thm:workflow}(2) reduces from, and
+\citet{crampton2013wspseniority} give fixed-parameter algorithms in the number
+of steps. \citet{gouglidis2023modelchecking} apply model checking to a
+production cloud IAM policy set. Our contribution here is not new complexity
+theory but the placement of our specific analysis problems relative to these
+known boundaries, which the earlier draft did not attempt.
+
+\paragraph{Temporal graphs.} Our $G(t)$ is a temporal
+network~\citep{holme2012temporal}, and time-respecting paths are the right
+formal notion for workflow feasibility. We stress the boundary established in
+Section~\ref{sec:results}: instantaneous authorisation is a snapshot question
+and does not need this machinery, while workflow feasibility does.
+
+\paragraph{Federated data processing.} Brane~\citep{valkering2021brane} provides
+the execution substrate, with policy enforcement via
+eFLINT~\citep{binsbergen2020eflint} and OPA/Rego~\citep{opa,kokash2024reasoner}.
+JustAct~\citep{esterhuyse2024justact} addresses justification and audit of
+actions against inter-organisational policies, which is complementary: it asks
+whether an action can be justified, while we ask whether a policy admits actions
+it should not. The EPI project~\citep{kassem2024epi} supplies the healthcare
+deployment context, and \citet{kokash2026compliance} the compliance-management
+architecture this model formalises.
+
+% ============================================================
+\section{Discussion and Conclusion}
+\label{sec:conclusion}
+
+We have given STP-RBAC a signature that supports the questions the FDP setting
+actually raises, and proved the four structural results the model needs to be
+usable: a reduction to classical RBAC per snapshot, monotonicity with its
+incremental-verification corollary, an interval characterisation of temporal
+separation of duty, and a placement of workflow feasibility on the tractable
+side of the boundary when roles are fixed and the intractable side when they are
+not.
+
+Several limitations are worth stating plainly. The model is a permission model:
+it says what may happen, not what must. Obligations, consent revocation with
+retroactive effect, and rights of erasure are normative constructs better served
+by eFLINT~\citep{binsbergen2020eflint}, and a hybrid deployment is the realistic
+target. The legality oracle $\LegalOK$ is an idealisation, and the gap between
+it and any implementable approximation is exactly where the compliance risk
+lives; our model can prove $\Auth_\Theta$ sound against a stated $\LegalOK$, but
+it cannot validate $\LegalOK$ itself. $\Gamma$ is a flat relation over labels
+and does not model conditional adequacy, standard contractual clauses, or
+derogations, all of which are conditional rather than binary in practice.
+Finally, the evaluation of Section~\ref{sec:evaluation} is a design; E1 and E2
+are in progress against the BraneHub prototype~\citep{kokash2026branehub}, and
+E3 through E6 are not yet run.
+
+Future work runs in three directions: purpose hierarchies with a subsumption
+order on $\Pdom$, which would let minimisation be stated once per purpose family
+rather than per purpose; conditional jurisdiction, replacing $\Gamma$ with
+guarded edges carrying safeguard requirements; and integration of the workflow
+feasibility check into the Brane orchestration path, so that a workflow is
+rejected at submission with a specific reason rather than failing at the first
+denied step.
+
+\bibliographystyle{plainnat}
+\bibliography{main}
+
+\end{document}
