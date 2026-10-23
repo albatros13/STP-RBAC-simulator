@@ -2,8 +2,7 @@
 
 A reference implementation and federated simulation of **STP-RBAC**:
 *Spatio-Temporal Purpose-aware Role-Based Access Control for Federated Data
-Processing*. The paper is in `docs/main.tex`; the evaluation plan is in
-`docs/EVALUATION-IMPLEMENTATION.md`.
+Processing*.
 
 The project has two parts:
 
