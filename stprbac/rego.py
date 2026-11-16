@@ -28,8 +28,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Iterable, Iterator
 
-from .intervals import IntervalSet
 from .model import Policy, Request
+from .serde import intervals_to_json, setmap_to_json, write_json
 
 REGO_FILE = Path(__file__).resolve().parent.parent / "policies" / "stprbac.rego"
 PACKAGE_PATH = "stprbac/authz"     # data.stprbac.authz
@@ -39,10 +39,6 @@ ENTRY_POINTS = ("decision", "coordinator", "worker")
 # ---------------------------------------------------------------------------
 # Policy -> OPA data document
 # ---------------------------------------------------------------------------
-def _ivs(iv: IntervalSet) -> list[list[int]]:
-    return [[a, b] for a, b in iv.intervals]
-
-
 def _nested(m: dict[tuple[str, str], object], conv) -> dict[str, dict[str, object]]:
     out: dict[str, dict[str, object]] = defaultdict(dict)
     for (a, b), v in sorted(m.items()):
@@ -62,16 +58,23 @@ def policy_to_opa_data(policy: Policy) -> dict:
         gamma[a].append(b)
     return {
         "roles": sorted(policy.roles),
-        "ua": _nested(policy.ua, _ivs),
-        "pa": _nested(policy.pa, _ivs),
-        "h": _nested(policy.h, _ivs),
-        "rho_u": {k: sorted(v) for k, v in sorted(policy.rho_u.items())},
-        "rho_g": {k: sorted(v) for k, v in sorted(policy.rho_g.items())},
-        "rho_s": {k: sorted(v) for k, v in sorted(policy.rho_s.items())},
+        "ua": _nested(policy.ua, intervals_to_json),
+        "pa": _nested(policy.pa, intervals_to_json),
+        "h": _nested(policy.h, intervals_to_json),
+        "rho_u": setmap_to_json(policy.rho_u),
+        "rho_g": setmap_to_json(policy.rho_g),
+        "rho_s": setmap_to_json(policy.rho_s),
         "gamma": dict(gamma),
         "pi": _nested(policy.pi, sorted),
-        "delta": {k: sorted(v) for k, v in sorted(policy.delta.items())},
+        "delta": setmap_to_json(policy.delta),
     }
+
+
+def write_data(policy: Policy, path: str | Path) -> Path:
+    """Write the OPA data document ``{"policy": ...}`` for ``policy`` to ``path``."""
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return write_json({"policy": policy_to_opa_data(policy)}, out)
 
 
 def write_bundle(policy: Policy, out_dir: str | Path) -> Path:
@@ -83,9 +86,7 @@ def write_bundle(policy: Policy, out_dir: str | Path) -> Path:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(REGO_FILE, out / REGO_FILE.name)
-    (out / "data.json").write_text(
-        json.dumps({"policy": policy_to_opa_data(policy)}, indent=2) + "\n",
-        encoding="utf-8")
+    write_data(policy, out / "data.json")
     return out
 
 
@@ -97,14 +98,33 @@ def request_to_input(q: Request, *, with_purpose: bool = True) -> dict:
     return d
 
 
-def _input_for(q: Request, entry: str) -> dict:
-    return request_to_input(q, with_purpose=(entry != "coordinator"))
+def _require_opa(opa: str) -> None:
+    if shutil.which(opa) is None:
+        raise FileNotFoundError(f"OPA binary {opa!r} not found on PATH")
+
+
+class _OpaClient:
+    """Shared request API; subclasses implement :meth:`_evaluate`."""
+
+    def _evaluate(self, rule: str, input_doc: dict):
+        raise NotImplementedError
+
+    def decide(self, q: Request, entry: str = "decision") -> dict:
+        """One decision document from ``entry`` (decision/coordinator/worker).
+
+        The coordinator entry is sent without ``q.p``.
+        """
+        return self._evaluate(entry, request_to_input(q, with_purpose=(entry != "coordinator")))
+
+    def decide_many(self, qs: Iterable[Request]) -> list[dict]:
+        """Full decisions for many requests in a single evaluation."""
+        return self._evaluate("batch", {"requests": [request_to_input(q) for q in qs]})
 
 
 # ---------------------------------------------------------------------------
 # Local evaluation: `opa eval`
 # ---------------------------------------------------------------------------
-class OpaCli:
+class OpaCli(_OpaClient):
     """Evaluate with the ``opa`` binary; nothing to start or stop.
 
     Each call spawns one process (tens of milliseconds), so use
@@ -112,8 +132,7 @@ class OpaCli:
     """
 
     def __init__(self, policy: Policy, opa: str = "opa"):
-        if shutil.which(opa) is None:
-            raise FileNotFoundError(f"OPA binary {opa!r} not found on PATH")
+        _require_opa(opa)
         self.opa = opa
         self._dir = tempfile.TemporaryDirectory(prefix="stprbac-opa-")
         write_bundle(policy, self._dir.name)
@@ -127,7 +146,7 @@ class OpaCli:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    def _eval(self, rule: str, input_doc: dict):
+    def _evaluate(self, rule: str, input_doc: dict):
         query = f"data.{PACKAGE_PATH.replace('/', '.')}.{rule}"
         proc = subprocess.run(
             [self.opa, "eval", "--format", "json", "--stdin-input",
@@ -140,19 +159,11 @@ class OpaCli:
             raise RuntimeError(f"opa eval: {query} is undefined")
         return result[0]["expressions"][0]["value"]
 
-    def decide(self, q: Request, entry: str = "decision") -> dict:
-        return self._eval(entry, _input_for(q, entry))
-
-    def decide_many(self, qs: Iterable[Request]) -> list[dict]:
-        """Full decisions for many requests in a single ``opa eval`` run."""
-        reqs = [request_to_input(q) for q in qs]
-        return self._eval("batch", {"requests": reqs})
-
 
 # ---------------------------------------------------------------------------
 # Remote evaluation: OPA REST API
 # ---------------------------------------------------------------------------
-class OpaServer:
+class OpaServer(_OpaClient):
     """Client for a running OPA server (``opa run --server``).
 
     :meth:`load` pushes the rules and a policy through the Policy and Data
@@ -185,19 +196,13 @@ class OpaServer:
         self._call("PUT", "/v1/policies/stprbac", REGO_FILE.read_bytes(), "text/plain")
         self._call("PUT", "/v1/data/policy", json.dumps(policy_to_opa_data(policy)).encode())
 
-    def _query(self, rule: str, input_doc: dict):
+    def _evaluate(self, rule: str, input_doc: dict):
         out = self._call("POST", f"/v1/data/{PACKAGE_PATH}/{rule}",
                          json.dumps({"input": input_doc}).encode())
         if "result" not in out:
             raise RuntimeError(f"OPA: data.{PACKAGE_PATH}/{rule} is undefined "
                                "(rules or data not loaded?)")
         return out["result"]
-
-    def decide(self, q: Request, entry: str = "decision") -> dict:
-        return self._query(entry, _input_for(q, entry))
-
-    def decide_many(self, qs: Iterable[Request]) -> list[dict]:
-        return self._query("batch", {"requests": [request_to_input(q) for q in qs]})
 
 
 def _free_port() -> int:
@@ -211,8 +216,7 @@ def opa_server(policy: Policy, port: int | None = None, opa: str = "opa",
                startup_timeout: float = 10.0) -> Iterator[OpaServer]:
     """Start an empty local ``opa run --server``, load ``policy`` over the REST
     API, and stop the server on exit."""
-    if shutil.which(opa) is None:
-        raise FileNotFoundError(f"OPA binary {opa!r} not found on PATH")
+    _require_opa(opa)
     port = port or _free_port()
     proc = subprocess.Popen(
         [opa, "run", "--server", "--addr", f"127.0.0.1:{port}", "--log-level", "error"],

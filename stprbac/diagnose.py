@@ -11,7 +11,8 @@ model; prose rendering is a presentation concern only.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from typing import Mapping
 
 from . import engine
 from .model import Policy, Request
@@ -24,6 +25,10 @@ class Denial:
     responsible_elements: list[str] = field(default_factory=list)
     all_failures: list[str] = field(default_factory=list)
     message: str = ""
+
+    def to_dict(self) -> dict:
+        """JSON-ready form, as carried in the federation's wire schemas."""
+        return asdict(self)
 
 
 _HUMAN = {
@@ -44,7 +49,7 @@ def diagnose(policy: Policy, q: Request,
     node only evaluates (and reports) what it is entitled to observe.
     """
     conj = engine.evaluate_conjuncts(policy, q, conjuncts)
-    failures = [c for c in engine.CONJUNCTS if c in conj and not conj[c]]
+    failures = [c for c, ok in conj.items() if not ok]   # already in fixed order
     if not failures:
         return None
 
@@ -79,3 +84,24 @@ def _responsible(policy: Policy, q: Request, conjunct: str) -> list[str]:
     if conjunct == "minimisation":
         return [f"Delta({q.p})={sorted(policy.delta_of(q.p))}", f"requested object={q.o}"]
     return []
+
+
+# ---------------------------------------------------------------------------
+# Presentation
+# ---------------------------------------------------------------------------
+def format_conjuncts(conjuncts: Mapping[str, bool]) -> str:
+    """``activation=T, locus=F, ...`` in the fixed conjunct order."""
+    return ", ".join(f"{c}={'T' if conjuncts[c] else 'F'}"
+                     for c in engine.CONJUNCTS if c in conjuncts)
+
+
+def format_phase(label: str, phase: Mapping | None) -> str:
+    """One trace line for a phase report ``{passed, first_failure, conjuncts}``.
+
+    Accepts the engine's PhaseResult fields as found in the federation's
+    PhaseReport JSON and in OPA's coordinator/worker documents alike.
+    """
+    if phase is None:
+        return f"     [{label:<11}] not reached"
+    mark = "pass" if phase["passed"] else f"FAIL@{phase['first_failure']}"
+    return f"     [{label:<11}] {mark:<18} {format_conjuncts(phase['conjuncts'])}"

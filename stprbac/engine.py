@@ -168,7 +168,9 @@ class PhaseResult:
     first_failure: str | None           # first failing conjunct, in fixed order
 
 
-def _phase(policy: Policy, q: Request, names: tuple[str, ...]) -> PhaseResult:
+def evaluate_phase(policy: Policy, q: Request,
+                   names: tuple[str, ...] = CONJUNCTS) -> PhaseResult:
+    """Evaluate the named conjuncts as one phase (default: all six, i.e. Auth)."""
     owned = evaluate_conjuncts(policy, q, names)
     first = next((n for n in CONJUNCTS if n in owned and not owned[n]), None)
     return PhaseResult(passed=all(owned.values()), conjuncts=owned, first_failure=first)
@@ -180,9 +182,9 @@ def coordinator_prefilter(policy: Policy, q: Request) -> PhaseResult:
     Note ``q.p`` is not read by any conjunct here: the coordinator need not be
     told why a workflow step wants an object.
     """
-    return _phase(policy, q, COORDINATOR_CONJUNCTS)
+    return evaluate_phase(policy, q, COORDINATOR_CONJUNCTS)
 
 
 def worker_decision(policy: Policy, q: Request) -> PhaseResult:
     """Purpose-dependent phase evaluated at the data-provider worker."""
-    return _phase(policy, q, WORKER_CONJUNCTS)
+    return evaluate_phase(policy, q, WORKER_CONJUNCTS)

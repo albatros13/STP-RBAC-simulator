@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import json
 import os
 import signal
 import subprocess
@@ -26,7 +25,7 @@ from pathlib import Path
 
 import httpx
 
-from stprbac.serde import policy_to_dict
+from stprbac.serde import save_policy
 
 RUNTIME_DIR = Path(__file__).parent / ".runtime"
 
@@ -66,7 +65,7 @@ def main() -> int:
     # Serialise the approved policy so every node loads an identical copy.
     RUNTIME_DIR.mkdir(exist_ok=True)
     policy_file = RUNTIME_DIR / "policy.json"
-    policy_file.write_text(json.dumps(policy_to_dict(policy), indent=2), encoding="utf-8")
+    save_policy(policy, policy_file)
 
     central = topo["central"]
     central_url = f"http://{central['host']}:{central['port']}"
@@ -98,8 +97,7 @@ def main() -> int:
 
     print(f"[launcher] scenario: {args.scenario}")
     print(f"[launcher] starting coordinator at {central_url} ...")
-    procs.append(spawn("federation.central:app", central["port"],
-                       {"PORT": str(central["port"])}))
+    procs.append(spawn("federation.central:app", central["port"], {}))
     if not _wait_healthy(central_url):
         print("[launcher] coordinator failed to start", file=sys.stderr)
         shutdown()
@@ -116,10 +114,11 @@ def main() -> int:
                 "OBJECTS": ",".join(w["objects"]),
                 "CENTRAL_URL": central_url,
                 "SELF_URL": self_url,
-                "PORT": str(w["port"]),
             },
         ))
-        _wait_healthy(self_url)
+        if not _wait_healthy(self_url):
+            print(f"[launcher] worker '{w['node_id']}' failed to start", file=sys.stderr)
+            shutdown()
 
     print("\n[launcher] federation is up:")
     print(f"    coordinator : {central_url}")

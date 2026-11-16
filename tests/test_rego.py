@@ -13,7 +13,7 @@ import unittest
 from dataclasses import replace
 
 from generators.synthetic import random_small
-from scenarios.pharma_hospital import build_policy
+from scenarios.pharma_hospital import DEMO_CASES, build_policy
 from stprbac import engine, rego
 from stprbac.model import Policy, Request
 
@@ -21,16 +21,15 @@ HAVE_OPA = shutil.which("opa") is not None
 
 
 def expected(policy: Policy, q: Request) -> dict:
-    cs = engine.evaluate_conjuncts(policy, q)
-    first = next((c for c in engine.CONJUNCTS if not cs[c]), None)
-    return {"allow": all(cs.values()), "conjuncts": cs, "first_failure": first}
+    ph = engine.evaluate_phase(policy, q)
+    return {"allow": ph.passed, "conjuncts": ph.conjuncts, "first_failure": ph.first_failure}
 
 
 def times(policy: Policy) -> list[int]:
     """Every interval endpoint and its neighbours, plus one point inside."""
     pts = set()
-    for iv in itertools.chain(policy.ua.values(), policy.pa.values(), policy.h.values()):
-        for a, b in iv.intervals:
+    for rel in policy.temporal_relations().values():
+        for a, b in (ab for iv in rel.values() for ab in iv.intervals):
             pts |= {a - 1, a, (a + b) // 2, b, b + 1}
     return sorted(pts)
 
@@ -41,17 +40,6 @@ def all_requests(policy: Policy) -> list[Request]:
                 sorted(policy.users), sorted(policy.roles), sorted(policy.objects),
                 sorted(policy.purposes), sorted(policy.labels))
             for t in times(policy)]
-
-
-# The demo_client.py cases: (request, allow, first failing conjunct).
-DEMO = [
-    (Request("alice", "clinician", "ehr", "care", "EU", 50), True, None),
-    (Request("erin", "coordinator_role", "ehr", "care", "EU", 50), True, None),
-    (Request("dan", "auditor", "consent", "audit", "CH", 150), False, "activation"),
-    (Request("carol", "analyst", "genome", "research", "EU", 150), False, "locus"),
-    (Request("carol", "analyst", "report", "reporting", "US", 250), False, "spatial"),
-    (Request("bob", "data_manager", "ehr", "care", "UK", 50), False, "purpose"),
-]
 
 
 @unittest.skipUnless(HAVE_OPA, "opa binary not on PATH")
@@ -66,11 +54,11 @@ class TestRegoCli(unittest.TestCase):
         cls.opa.close()
 
     def test_demo_cases(self):
-        got = self.opa.decide_many(q for q, _, _ in DEMO)
-        for (q, allow, first), d in zip(DEMO, got):
-            with self.subTest(q=q):
-                self.assertEqual(d["allow"], allow)
-                self.assertEqual(d["first_failure"], first)
+        got = self.opa.decide_many(c.request for c in DEMO_CASES)
+        for case, d in zip(DEMO_CASES, got):
+            with self.subTest(q=case.request):
+                self.assertEqual(d["allow"], case.first_failure is None)
+                self.assertEqual(d["first_failure"], case.first_failure)
 
     def test_pharma_exhaustive(self):
         qs = all_requests(self.policy)
@@ -85,7 +73,8 @@ class TestRegoCli(unittest.TestCase):
         rng = random.Random(7)
         for i in range(20):
             p = random_small(rng)
-            qs = rng.sample(all_requests(p), k=min(500, len(all_requests(p))))
+            reqs = all_requests(p)
+            qs = rng.sample(reqs, k=min(500, len(reqs)))
             with rego.OpaCli(p) as opa:
                 got = opa.decide_many(qs)
             for q, d in zip(qs, got):
@@ -112,7 +101,7 @@ class TestRegoServer(unittest.TestCase):
 
     def test_reload_policy(self):
         """One server, re-pointed at another Theta through the Data API."""
-        q = DEMO[0][0]
+        q = DEMO_CASES[0].request
         with rego.opa_server(build_policy()) as srv:
             self.assertTrue(srv.decide(q)["allow"])
             p = build_policy()

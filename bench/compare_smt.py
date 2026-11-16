@@ -21,17 +21,16 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
-import platform
 import random
 import statistics
-import sys
 import time
 from dataclasses import replace
 from pathlib import Path
 
 import z3
 
-from generators.synthetic import Knobs, generate, random_small
+from bench import machine
+from generators.synthetic import Knobs, generate, random_request, random_small
 from scenarios.pharma_hospital import build_policy
 from stprbac import engine, smt
 from stprbac.intervals import IntervalSet, always
@@ -44,7 +43,7 @@ RESULTS = Path(__file__).parent / "results"
 # Engine-based baselines for the existential queries
 # ---------------------------------------------------------------------------
 def all_ivs(p: Policy):
-    return itertools.chain(p.ua.values(), p.pa.values(), p.h.values())
+    return (iv for rel in p.temporal_relations().values() for iv in rel.values())
 
 
 def instants(p: Policy, how: str) -> list[int]:
@@ -56,18 +55,11 @@ def instants(p: Policy, how: str) -> list[int]:
     return sorted({a for iv in all_ivs(p) for a, _ in iv.intervals})
 
 
-def matches(p: Policy, pat: smt.AccessPattern):
-    dom = lambda v, xs: [v] if v is not None else sorted(xs)  # noqa: E731
-    return itertools.product(dom(pat.u, p.users), dom(pat.r, p.roles), dom(pat.o, p.objects),
-                             dom(pat.p, p.purposes), dom(pat.l, p.labels))
-
-
 def engine_find_access(p: Policy, pat: smt.AccessPattern, how: str) -> Request | None:
-    ts = [t for t in instants(p, how)
-          if (pat.t_from is None or t >= pat.t_from) and (pat.t_to is None or t <= pat.t_to)]
+    ts = [t for t in instants(p, how) if pat.admits_time(t)]
     if pat.t_from is not None and how == "breakpoints":
         ts = sorted(set(ts) | {pat.t_from})
-    for (u, r, o, pp, l) in matches(p, pat):
+    for (u, r, o, pp, l) in itertools.product(*pat.domains(p)):
         for t in ts:
             q = Request(u, r, o, pp, l, t)
             if engine.auth(p, q):
@@ -95,12 +87,6 @@ def scale_time(p: Policy, k: int) -> Policy:
     s = lambda m: {key: IntervalSet((a * k, b * k) for a, b in iv.intervals)  # noqa: E731
                    for key, iv in m.items()}
     return replace(p, ua=s(p.ua), pa=s(p.pa), h=s(p.h))
-
-
-def random_request(p: Policy, rng: random.Random, horizon: int) -> Request:
-    return Request(rng.choice(sorted(p.users)), rng.choice(sorted(p.roles)),
-                   rng.choice(sorted(p.objects)), rng.choice(sorted(p.purposes)),
-                   rng.choice(sorted(p.labels)), rng.randint(-5, horizon))
 
 
 def timed(fn, *args):
@@ -179,9 +165,10 @@ def agreement(n_policies: int, n_requests: int) -> dict:
                     continue
                 res["repairs_found"] += 1
                 rp = out.policy
+                orig = p.temporal_relations()
                 shrunk_only = all(
-                    all(t in getattr(p, rel)[k] for t in instants(rp, "enum") if t in iv)
-                    for rel in ("ua", "pa", "h") for k, iv in getattr(rp, rel).items())
+                    all(t in orig[kind][k] for t in instants(rp, "enum") if t in iv)
+                    for kind, rel in rp.temporal_relations().items() for k, iv in rel.items())
                 if (engine_find_access(rp, pat, "enum") is not None
                         or not all(engine.auth(rp, q) for q in keep) or not shrunk_only):
                     res["repair_unsound"] += 1
@@ -291,9 +278,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
     args = ap.parse_args()
-    meta = {"python": sys.version.split()[0], "implementation": platform.python_implementation(),
-            "z3": z3.get_version_string(), "machine": platform.platform(),
-            "processor": platform.processor() or platform.machine()}
+    meta = {**machine.describe(), "z3": z3.get_version_string()}
     print(json.dumps(meta, indent=2))
 
     n_pol, n_req = (60, 20) if args.quick else (200, 30)

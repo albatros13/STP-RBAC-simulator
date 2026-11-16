@@ -1,4 +1,5 @@
-# Rego unit tests: the demo_client.py cases against the pharma_hospital data.
+# Rego unit tests: scenarios.pharma_hospital.DEMO_CASES (and a few more)
+# against the pharma_hospital data.
 #
 #   opa test policies/ -v
 #

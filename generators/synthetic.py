@@ -11,7 +11,7 @@ import random
 from dataclasses import dataclass
 
 from stprbac.intervals import IntervalSet
-from stprbac.model import Policy
+from stprbac.model import Policy, Request
 
 
 @dataclass(frozen=True)
@@ -87,3 +87,10 @@ def random_small(rng: random.Random) -> Policy:
         n_purposes=rng.randint(1, 4), sod_pairs=rng.randint(0, 3),
     )
     return generate(knobs, rng.randrange(2**32))
+
+
+def random_request(p: Policy, rng: random.Random, t_max: int, t_min: int = -5) -> Request:
+    """A uniformly drawn request over p's entities, with t in [t_min, t_max]."""
+    return Request(rng.choice(sorted(p.users)), rng.choice(sorted(p.roles)),
+                   rng.choice(sorted(p.objects)), rng.choice(sorted(p.purposes)),
+                   rng.choice(sorted(p.labels)), rng.randint(t_min, t_max))

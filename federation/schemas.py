@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from stprbac.engine import PhaseResult
+from stprbac.model import Request
+
 
 class AccessRequestModel(BaseModel):
     """An STP-RBAC access request q = (u, r, o, p, l, t)."""
@@ -13,6 +16,9 @@ class AccessRequestModel(BaseModel):
     p: str = Field(..., description="declared purpose")
     l: str = Field(..., description="jurisdiction (locus) the request is made from")
     t: int = Field(..., description="time (integer point on the planning horizon)")
+
+    def to_request(self) -> Request:
+        return Request(**self.model_dump())
 
 
 class Registration(BaseModel):
@@ -32,6 +38,11 @@ class PhaseReport(BaseModel):
     passed: bool
     conjuncts: dict[str, bool]      # conjunct -> verdict, only those this phase owns
     first_failure: str | None = None
+
+    @classmethod
+    def from_phase(cls, node: str, enforcement_point: str, phase: PhaseResult) -> "PhaseReport":
+        return cls(node=node, enforcement_point=enforcement_point, passed=phase.passed,
+                   conjuncts=phase.conjuncts, first_failure=phase.first_failure)
 
 
 class WorkerDecision(BaseModel):

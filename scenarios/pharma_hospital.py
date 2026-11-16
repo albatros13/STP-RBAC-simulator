@@ -16,8 +16,10 @@ integer points; the horizon is divided into four project phases:
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from stprbac.intervals import IntervalSet, always
-from stprbac.model import Policy
+from stprbac.model import Policy, Request
 
 # ---- jurisdictions (L) ----------------------------------------------------
 EU, UK, US, CH, IN = "EU", "UK", "US", "CH", "IN"
@@ -27,7 +29,6 @@ PH1 = IntervalSet([(0, 99)])
 PH2 = IntervalSet([(100, 199)])
 PH3 = IntervalSet([(200, 299)])
 PH4 = IntervalSet([(300, 399)])
-PH12 = PH1.union(PH2)
 PH23 = PH2.union(PH3)
 ALL = always(399)
 
@@ -156,7 +157,6 @@ def build_policy() -> Policy:
 def default_topology() -> dict:
     """One worker per storage region, on consecutive localhost ports."""
     return {
-        "policy_module": "scenarios.pharma_hospital",
         "central": {"host": "127.0.0.1", "port": 9000},
         "workers": [
             {"node_id": "eu-hospital", "region": EU, "host": "127.0.0.1",
@@ -167,3 +167,35 @@ def default_topology() -> dict:
              "port": 9003, "objects": ["genome"]},
         ],
     }
+
+
+# ---- demo requests ----------------------------------------------------------
+class DemoCase(NamedTuple):
+    description: str
+    request: Request
+    first_failure: str | None      # None: authorised
+    expected: str                  # where / how it should be decided
+
+
+# One request per decision path. Used by demo_client.py, run_opa.py and the
+# tests (policies/stprbac_test.rego covers the same requests in Rego).
+DEMO_CASES = [
+    DemoCase("Authorised: EU clinician reads EHR for care",
+             Request("alice", "clinician", "ehr", "care", EU, 50),
+             None, "AUTH at eu-hospital"),
+    DemoCase("Authorised via hierarchy: coordinator inherits clinician's EHR permission",
+             Request("erin", "coordinator_role", "ehr", "care", EU, 50),
+             None, "AUTH at eu-hospital (inherited permission)"),
+    DemoCase("Denied at COORDINATOR (activation): auditor is not active outside phase 4",
+             Request("dan", "auditor", "consent", "audit", CH, 150),
+             "activation", "DENY at coordinator / activation"),
+    DemoCase("Denied at COORDINATOR (locus): US analyst declaring an EU locus",
+             Request("carol", "analyst", "genome", "research", EU, 150),
+             "locus", "DENY at coordinator / locus"),
+    DemoCase("Denied at COORDINATOR (spatial): US locus may not touch EU-governed report",
+             Request("carol", "analyst", "report", "reporting", US, 250),
+             "spatial", "DENY at coordinator / spatial (cross-border)"),
+    DemoCase("Denied at WORKER (purpose): data manager may anonymise EHR, not use it for care",
+             Request("bob", "data_manager", "ehr", "care", UK, 50),
+             "purpose", "DENY at eu-hospital / purpose"),
+]

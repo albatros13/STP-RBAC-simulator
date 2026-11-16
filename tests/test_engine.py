@@ -8,8 +8,8 @@ import random
 import time
 import unittest
 
-from generators.synthetic import random_small
-from scenarios.pharma_hospital import build_policy
+from generators.synthetic import random_request, random_small
+from scenarios.pharma_hospital import DEMO_CASES, build_policy
 from stprbac import diagnose, engine
 from stprbac.intervals import IntervalSet, always
 from stprbac.model import Policy, Request
@@ -76,10 +76,6 @@ def auth_naive(policy: Policy, q: Request) -> dict[str, bool]:
     }
 
 
-def random_policy(rng: random.Random) -> Policy:
-    return random_small(rng)
-
-
 class IntervalSetTest(unittest.TestCase):
     def test_normalises_touching_and_overlapping(self):
         self.assertEqual(IntervalSet([(4, 6), (1, 3), (5, 9), (20, 20)]).intervals,
@@ -142,16 +138,8 @@ class ValidationTest(unittest.TestCase):
 class EngineTest(unittest.TestCase):
     def test_demo_cases(self):
         p = build_policy()
-        cases = [
-            (("alice", "clinician", "ehr", "care", "EU", 50), None),
-            (("erin", "coordinator_role", "ehr", "care", "EU", 50), None),
-            (("dan", "auditor", "consent", "audit", "CH", 150), "activation"),
-            (("carol", "analyst", "genome", "research", "EU", 150), "locus"),
-            (("carol", "analyst", "report", "reporting", "US", 250), "spatial"),
-            (("bob", "data_manager", "ehr", "care", "UK", 50), "purpose"),
-        ]
-        for args, failing in cases:
-            q = Request(*args)
+        for case in DEMO_CASES:
+            q, failing = case.request, case.first_failure
             with self.subTest(q=q):
                 self.assertEqual(engine.auth(p, q), failing is None)
                 den = diagnose.diagnose(p, q)
@@ -160,13 +148,9 @@ class EngineTest(unittest.TestCase):
     def test_agrees_with_naive_oracle(self):
         for seed in range(300):
             rng = random.Random(seed)
-            p = random_policy(rng)
+            p = random_small(rng)
             for _ in range(40):
-                q = Request(
-                    rng.choice(sorted(p.users)), rng.choice(sorted(p.roles)),
-                    rng.choice(sorted(p.objects)), rng.choice(sorted(p.purposes)),
-                    rng.choice(sorted(p.labels)), rng.randint(-5, 100),
-                )
+                q = random_request(p, rng, 100)
                 with self.subTest(seed=seed, q=q):
                     self.assertEqual(engine.evaluate_conjuncts(p, q), auth_naive(p, q))
 
@@ -174,9 +158,7 @@ class EngineTest(unittest.TestCase):
         p = build_policy()
         rng = random.Random(0)
         for _ in range(2000):
-            q = Request(rng.choice(sorted(p.users)), rng.choice(sorted(p.roles)),
-                        rng.choice(sorted(p.objects)), rng.choice(sorted(p.purposes)),
-                        rng.choice(sorted(p.labels)), rng.randint(0, 399))
+            q = random_request(p, rng, 399, t_min=0)
             both = (engine.coordinator_prefilter(p, q).passed
                     and engine.worker_decision(p, q).passed)
             self.assertEqual(both, engine.auth(p, q))

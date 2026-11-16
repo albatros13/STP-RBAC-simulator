@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
+from typing import Iterable
 
 from .intervals import IntervalSet
 
@@ -81,6 +82,10 @@ class Policy:
         for (u, r), iv in self.ua.items():
             out.setdefault(u, []).append((r, iv))
         return {k: tuple(v) for k, v in out.items()}
+
+    def temporal_relations(self) -> dict[str, dict[tuple[str, str], IntervalSet]]:
+        """The three time-indexed relations by name: UA (tau_U), PA (tau_P), H (tau_H)."""
+        return {"UA": self.ua, "PA": self.pa, "H": self.h}
 
     # ---- convenience accessors (default to empty / never) ---------------
     def tau_u(self, u: str, r: str) -> IntervalSet:
@@ -150,30 +155,33 @@ def _validate(p: Policy) -> list[str]:
             errs.append(f"SoD pair {sorted(pair)} must contain two distinct roles")
         unknown("role", f"SoD{sorted(pair)}", pair, p.roles)
 
-    if _has_cycle(p.h):
+    nodes = {x for edge in p.h for x in edge}
+    if len(topological_order(nodes, p.h)) < len(nodes):
         errs.append("role hierarchy H must be acyclic")
     return errs
 
 
-def _has_cycle(h: dict[tuple[str, str], IntervalSet]) -> bool:
-    """Cycle detection over the (time-agnostic) edge set of H.
+def topological_order(nodes: Iterable[str], edges: Iterable[tuple[str, str]]) -> list[str]:
+    """Kahn's algorithm over the (time-agnostic) edges (senior, junior).
 
-    Kahn's algorithm: iterative, so arbitrarily deep hierarchies cannot hit
-    Python's recursion limit.
+    Seniors come before their juniors; ties are broken deterministically. On a
+    cyclic graph the result omits every node on or below a cycle, so
+    ``len(result) < len(nodes)`` detects cycles. Iterative, so arbitrarily
+    deep hierarchies cannot hit Python's recursion limit.
     """
-    indeg: dict[str, int] = {}
+    indeg = {n: 0 for n in nodes}
     adj: dict[str, list[str]] = {}
-    for (s, j) in h:
+    for s, j in edges:
         adj.setdefault(s, []).append(j)
         indeg.setdefault(s, 0)
         indeg[j] = indeg.get(j, 0) + 1
-    ready = [n for n, d in indeg.items() if d == 0]
-    seen = 0
+    ready = sorted((n for n, d in indeg.items() if d == 0), reverse=True)
+    order: list[str] = []
     while ready:
         n = ready.pop()
-        seen += 1
+        order.append(n)
         for j in adj.get(n, ()):
             indeg[j] -= 1
             if indeg[j] == 0:
                 ready.append(j)
-    return seen < len(indeg)
+    return order

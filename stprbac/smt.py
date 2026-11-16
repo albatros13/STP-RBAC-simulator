@@ -48,7 +48,7 @@ import z3
 
 from . import engine
 from .intervals import IntervalSet
-from .model import Policy, Request
+from .model import Policy, Request, topological_order
 
 Mode = Literal["check", "synthesise"]
 EdgeKey = tuple[str, str, str]        # ("UA"|"PA"|"H", x, y)
@@ -79,6 +79,16 @@ class AccessPattern:
     t_from: int | None = None
     t_to: int | None = None
 
+    def domains(self, policy: Policy) -> tuple[list[str], ...]:
+        """Candidate values for (u, r, o, p, l): the fixed one, or all, sorted."""
+        dom = lambda v, xs: [v] if v is not None else sorted(xs)  # noqa: E731
+        return (dom(self.u, policy.users), dom(self.r, policy.roles),
+                dom(self.o, policy.objects), dom(self.p, policy.purposes),
+                dom(self.l, policy.labels))
+
+    def admits_time(self, t: int) -> bool:
+        return (self.t_from is None or t >= self.t_from) and (self.t_to is None or t <= self.t_to)
+
 
 class Encoding:
     """The Section 6 encoding of one policy, in one mode."""
@@ -90,18 +100,16 @@ class Encoding:
         self.mode = mode
         self.side: list[z3.BoolRef] = []        # well-formedness of free endpoints
         self.windows: dict[EdgeKey, list[Window]] = {}
-        for kind, rel in (("UA", policy.ua), ("PA", policy.pa), ("H", policy.h)):
+        for kind, rel in policy.temporal_relations().items():
             for (x, y), iv in rel.items():
                 self.windows[(kind, x, y)] = [
                     self._window(kind, x, y, j, a, b) for j, (a, b) in enumerate(iv.intervals)
                 ]
 
         self._h_in: dict[str, list[str]] = {}
-        self._h_out: dict[str, list[str]] = {}
         for (s, j) in policy.h:
-            self._h_out.setdefault(s, []).append(j)
             self._h_in.setdefault(j, []).append(s)
-        self._topo = _topological_order(policy.roles, self._h_out)
+        self._topo = topological_order(policy.roles, policy.h)
         self._reach: dict[str, frozenset[str]] = {}
         self._sen: dict[tuple[str, int], dict[str, z3.BoolRef]] = {}
 
@@ -127,7 +135,7 @@ class Encoding:
         if r not in self._reach:
             seen, stack = {r}, [r]
             while stack:
-                for j in self._h_out.get(stack.pop(), ()):
+                for j, _ in self.policy.h_succ.get(stack.pop(), ()):
                     if j not in seen:
                         seen.add(j)
                         stack.append(j)
@@ -205,13 +213,11 @@ class Encoding:
     # ---- pattern expansion ---------------------------------------------
     def candidates(self, pat: AccessPattern) -> Iterable[tuple[str, str, str, str, str]]:
         """Concrete (u, r, o, p, l) matching the pattern whose ground part holds."""
-        P = self.policy
-        dom = lambda v, xs: [v] if v is not None else sorted(xs)  # noqa: E731
-        for u, o, p, l in itertools.product(dom(pat.u, P.users), dom(pat.o, P.objects),
-                                            dom(pat.p, P.purposes), dom(pat.l, P.labels)):
+        us, rs, os_, ps, ls = pat.domains(self.policy)
+        for u, o, p, l in itertools.product(us, os_, ps, ls):
             if not self.static_ok(u, o, p, l):
                 continue
-            for r in dom(pat.r, P.roles):
+            for r in rs:
                 yield (u, r, o, p, l)
 
     def lower_endpoints_in(self, formula: z3.ExprRef) -> list[z3.ArithRef]:
@@ -221,13 +227,14 @@ class Encoding:
         are the candidate instants for the breakpoint argument.
         """
         if self.mode == "check":
-            seen_vals: set[int] = set()
-            for ws in self.windows.values():
-                for w in ws:
-                    seen_vals.add(w.original[0])
-            return [z3.IntVal(v) for v in sorted(seen_vals)]
+            # numeral endpoints leave no trace in the formula: use them all
+            return [z3.IntVal(v) for v in sorted({w.original[0] for w in self.all_windows()})]
         names = _const_names(formula)
-        return [w.a for ws in self.windows.values() for w in ws if str(w.a) in names]
+        return [w.a for w in self.all_windows() if str(w.a) in names]
+
+    def all_windows(self) -> Iterable[Window]:
+        for ws in self.windows.values():
+            yield from ws
 
 
 def _or(terms: list[z3.BoolRef]) -> z3.BoolRef:
@@ -250,23 +257,6 @@ def _const_names(e: z3.ExprRef) -> set[str]:
             out.add(x.decl().name())
         stack.extend(x.children())
     return out
-
-
-def _topological_order(roles: Iterable[str], out: dict[str, list[str]]) -> list[str]:
-    indeg = {r: 0 for r in roles}
-    for js in out.values():
-        for j in js:
-            indeg[j] = indeg.get(j, 0) + 1
-    ready = sorted(r for r, d in indeg.items() if d == 0)
-    order = []
-    while ready:
-        n = ready.pop()
-        order.append(n)
-        for j in out.get(n, ()):
-            indeg[j] -= 1
-            if indeg[j] == 0:
-                ready.append(j)
-    return order
 
 
 def _time_bounds(t: z3.ArithRef, pat: AccessPattern) -> list[z3.BoolRef]:
@@ -500,11 +490,10 @@ def repair(policy: Policy, forbidden: Iterable[AccessPattern],
     opt.add(enc.side)
 
     cost_terms = []
-    for ws in enc.windows.values():
-        for w in ws:
-            oa, ob = w.original
-            opt.add(z3.Implies(w.enabled, z3.And(w.a >= oa, w.b <= ob)))
-            cost_terms.append(z3.If(w.enabled, (w.a - oa) + (ob - w.b), ob - oa + 1))
+    for w in enc.all_windows():
+        oa, ob = w.original
+        opt.add(z3.Implies(w.enabled, z3.And(w.a >= oa, w.b <= ob)))
+        cost_terms.append(z3.If(w.enabled, (w.a - oa) + (ob - w.b), ob - oa + 1))
 
     for q in required:
         opt.add(enc.auth(q.u, q.r, q.o, q.p, q.l, z3.IntVal(q.t)))
@@ -534,16 +523,16 @@ def repair(policy: Policy, forbidden: Iterable[AccessPattern],
         return None
     m = opt.model()
 
-    new: dict[str, dict] = {"UA": {}, "PA": {}, "H": {}}
+    val = lambda e: m.eval(e, model_completion=True)  # noqa: E731
+    old = policy.temporal_relations()
+    new: dict[str, dict] = {kind: {} for kind in old}
     edits = []
     for (kind, x, y), ws in enc.windows.items():
-        kept = [(m.eval(w.a, model_completion=True).as_long(),
-                 m.eval(w.b, model_completion=True).as_long())
-                for w in ws if z3.is_true(m.eval(w.enabled, model_completion=True))]
-        after = IntervalSet(kept)
-        before = {"UA": policy.ua, "PA": policy.pa, "H": policy.h}[kind][(x, y)]
+        after = IntervalSet((val(w.a).as_long(), val(w.b).as_long())
+                            for w in ws if z3.is_true(val(w.enabled)))
+        before = old[kind][(x, y)]
         new[kind][(x, y)] = after
         if after != before:
             edits.append(RepairEdit((kind, x, y), before, after))
     repaired = replace(policy, ua=new["UA"], pa=new["PA"], h=new["H"])
-    return RepairResult(repaired, m.eval(cost, model_completion=True).as_long(), edits)
+    return RepairResult(repaired, val(cost).as_long(), edits)

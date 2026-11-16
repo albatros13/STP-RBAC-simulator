@@ -1,0 +1,8 @@
+# Federation services (federation/, run_federation.py, demo_client.py, run_opa.py)
+fastapi>=0.100
+uvicorn>=0.23
+httpx>=0.24
+pydantic>=2.0
+
+# Optional: SMT checks (stprbac/smt.py) and benchmarks (bench/)
+z3-solver>=4.12
