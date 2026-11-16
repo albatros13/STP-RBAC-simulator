@@ -2,7 +2,7 @@
 
 A reference implementation and federated simulation of **STP-RBAC**:
 *Spatio-Temporal Purpose-aware Role-Based Access Control for Federated Data
-Processing*. 
+Processing*.
 
 The project has two parts:
 
@@ -52,8 +52,8 @@ and are checked by the worker that holds the data. Because conjunction is
 associative, the two-phase result is exactly `Auth(q)`.
 
 > **Note:** as in the paper, `sod` is not a condition of `Auth`. It is a
-> property of the policy as a whole (temporal SoD), checked by the SMT
-> analysis `stprbac.smt.temporal_sod`.
+> property of the policy as a whole (temporal SoD), and the analysis that
+> would check it (algorithm A2) is not implemented yet.
 
 Constructing a `Policy` raises `ValueError` when the policy breaks the side
 conditions of Definition 1:
@@ -75,7 +75,6 @@ stprbac/                 core library (no third-party dependencies)
   diagnose.py            denial -> failing conjunct, responsible policy entries
   serde.py               exact JSON round-trip of Policy for shipping between nodes
   rego.py                Policy -> OPA data; evaluate via `opa eval` or the OPA REST API
-  smt.py                 Z3 encoding (Section 6): find_access, temporal_sod, dead_permissions, repair
 policies/
   stprbac.rego           Auth and the two-phase split in Rego (policy-independent rules)
   stprbac_test.rego      `opa test` cases for the example scenario
@@ -85,11 +84,7 @@ federation/
   worker.py              data-provider service (phase 2 + local "execution")
   schemas.py             Pydantic wire models
 scenarios/
-  pharma_hospital.py     example policy, default 1-coordinator/3-worker topology, DEMO_CASES
-generators/
-  synthetic.py           seeded random policies and requests
-bench/
-  compare_smt.py         agreement and timing: Z3 encoding vs. the direct engine
+  pharma_hospital.py     example policy + default 1-coordinator/3-worker topology
 tests/
   test_engine.py         unit tests, incl. agreement with a naive reference oracle
   test_rego.py           agreement of the Rego encoding with the engine (needs `opa`)
@@ -97,6 +92,7 @@ run_federation.py        starts the whole federation on localhost
 run_opa.py               evaluates a scenario on OPA (local or over the REST API)
 demo_client.py           sends a set of annotated requests to the coordinator
 docs/                    paper sources and evaluation spec
+main.py, test_main.http  leftover PyCharm FastAPI template (not used)
 ```
 
 ## Installation
@@ -107,7 +103,7 @@ nothing else. The federation needs:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt   # z3-solver is only needed for stprbac/smt.py and bench/
+pip install fastapi uvicorn httpx pydantic
 ```
 
 ## Usage
@@ -146,9 +142,8 @@ python demo_client.py --json     # raw JSON decisions
 python demo_client.py --central http://127.0.0.1:9100
 ```
 
-The client lists the registered workers and then sends the six requests of
-`scenarios.pharma_hospital.DEMO_CASES`. Each one targets a different decision
-path:
+The client lists the registered workers and then sends six requests. Each one
+targets a different decision path:
 
 | Request | Expected result |
 |---|---|
@@ -223,11 +218,9 @@ diagnose.diagnose(policy, q)              # Denial(failing_conjunct='purpose', e
 (for example `engine.COORDINATOR_CONJUNCTS`), so each node evaluates only the
 conditions it enforces.
 
-Other useful helpers: `engine.evaluate_phase`, `engine.juniors_t`,
-`engine.act_t`, `engine.pa_star_t`, `engine.pi_t`, `engine.region_ok`,
-`IntervalSet` operations (`union`, `intersect`, `first_after`, `t in iv`),
-`serde.policy_to_dict` / `policy_from_dict` and `serde.save_policy` /
-`load_policy`.
+Other useful helpers: `engine.juniors_t`, `engine.act_t`, `engine.pa_star_t`, `engine.pi_t`,
+`engine.region_ok`, `IntervalSet` operations (`union`, `intersect`,
+`first_after`, `t in iv`), and `serde.policy_to_dict` / `policy_from_dict`.
 
 ### 5. Evaluate on OPA / Rego
 
@@ -325,8 +318,6 @@ Create a module that defines:
 - `build_policy() -> Policy`
 - `default_topology() -> dict`, shaped like this:
   `{"central": {"host", "port"}, "workers": [{"node_id", "region", "host", "port", "objects"}, ...]}`
-- optionally `DEMO_CASES`, a list of `DemoCase` (see `scenarios/pharma_hospital.py`),
-  used by `run_opa.py demo`
 
 Then pass it to the launcher with
 `python run_federation.py --scenario your.module`.
