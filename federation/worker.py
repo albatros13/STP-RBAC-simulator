@@ -21,7 +21,7 @@ import os
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from stprbac import diagnose, engine
 from stprbac.model import Policy
@@ -60,6 +60,20 @@ def create_worker_app(node_id: str, region: str, policy: Policy, objects: list[s
     async def enforce(req: AccessRequestModel) -> WorkerDecision:
         """Run the purpose-dependent phase and, if it passes, execute the step."""
         q = req.to_request()
+
+        # Defence in depth for T3/T4: execute only at a witness site for q.l,
+        # and only on an object held here. A misrouted request is an
+        # enforcement fault, not a policy denial, so it is refused with 421.
+        if q.o not in objects:
+            raise HTTPException(status_code=421,
+                                detail=f"object '{q.o}' is not held at {node_id}")
+        if region not in engine.witness_sites(policy, q.l, q.o):
+            raise HTTPException(
+                status_code=421,
+                detail=f"region {region} does not witness RegionOK for locus '{q.l}' "
+                       f"and object '{q.o}' (witness sites="
+                       f"{sorted(engine.witness_sites(policy, q.l, q.o))})")
+
         phase = engine.worker_decision(policy, q)
         report = PhaseReport.from_phase(node_id, "worker", phase)
 
@@ -71,7 +85,7 @@ def create_worker_app(node_id: str, region: str, policy: Policy, objects: list[s
             )
 
         # Authorised: process locally and return only a minimised output.
-        raw = local_data.get(q.o, f"<unknown object {q.o}>")
+        raw = local_data[q.o]
         output = (f"processed('{q.o}' for purpose '{q.p}' by role '{q.r}') "
                   f"@ region {region} [derived from {len(raw)} bytes, raw data retained locally]")
         return WorkerDecision(

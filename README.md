@@ -191,8 +191,14 @@ The response is a `Decision`. It has these fields:
   responsible policy entries, all failing conjuncts and a readable message.
 
 When the prefilter passes, the coordinator sends the request to a registered
-worker that declares the object. It prefers a worker whose region is in
-`rho_s(o)`. If no worker holds the object, it returns HTTP 503.
+worker that holds the object in a region that witnesses the existential clause
+of `RegionOK` (assumption T4): the region is in `rho_s(o)` and `(l, region)` is
+in `gamma`. Ties are broken by node id, not registration order. If there is no
+such worker, it returns HTTP 503; it never falls back to another holder.
+
+As defence in depth, a worker also refuses (HTTP 421) a request for an object it
+does not hold, or one for which its region is not a witness site. The
+coordinator reports such a refusal as HTTP 502.
 
 ### 4. Use the core library directly
 

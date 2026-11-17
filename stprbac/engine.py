@@ -123,6 +123,17 @@ def region_ok(policy: Policy, l: str, o: str) -> bool:
     return every_governor_permits and some_replica_reachable
 
 
+def witness_sites(policy: Policy, l: str, o: str) -> frozenset[str]:
+    """{ l_s in rho_S(o) | (l, l_s) in Gamma }: the storage sites of o that
+    witness the existential clause of RegionOK for locus l.
+
+    Assumption T4 (faithful routing) requires an admitted request to be
+    executed at one of these sites, and nowhere else.
+    """
+    return frozenset(ls for ls in policy.rho_s.get(o, frozenset())
+                     if (l, ls) in policy.gamma)
+
+
 # ---------------------------------------------------------------------------
 # Per-conjunct evaluation and the full predicate (Definition 6)
 # ---------------------------------------------------------------------------

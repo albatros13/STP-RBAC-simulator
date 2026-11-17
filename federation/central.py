@@ -5,9 +5,11 @@ It enforces the purpose-INDEPENDENT phase of Auth (Corollary 2):
 
     activation, locus, effective assignment (PA*_t), spatial (RegionOK).
 
-If a request clears the prefilter, the coordinator routes it to the worker whose
-region actually stores the object (rho_S), which runs the purpose-dependent
-phase against its private data. The composite decision equals Auth exactly.
+If a request clears the prefilter, the coordinator routes it to a worker whose
+region witnesses the existential clause of RegionOK, i.e. stores the object
+(rho_S) and is reachable from the declared locus (Gamma): assumption T4. That
+worker runs the purpose-dependent phase against its private data. The
+composite decision equals Auth exactly.
 
 Configured from the environment variable POLICY_FILE.
 """
@@ -25,7 +27,9 @@ from stprbac.serde import load_policy
 from .schemas import AccessRequestModel, Decision, PhaseReport, Registration, WorkerDecision
 
 
-def create_central_app(policy: Policy) -> FastAPI:
+def create_central_app(policy: Policy,
+                       transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+    """``transport`` replaces the network for calls to workers (used by tests)."""
     app = FastAPI(title="STP-RBAC Coordinator (Central node)")
     registry: dict[str, Registration] = {}          # node_id -> Registration
 
@@ -44,12 +48,17 @@ def create_central_app(policy: Policy) -> FastAPI:
     async def nodes() -> dict:
         return {nid: r.model_dump() for nid, r in registry.items()}
 
-    def _route(o: str) -> Registration | None:
-        """A worker that declares object o, preferring one in a storage region of o."""
-        holders = [reg for reg in registry.values() if o in reg.objects]
-        storage = policy.rho_s.get(o, frozenset())
-        return next((reg for reg in holders if reg.region in storage),
-                    holders[0] if holders else None)
+    def _route(o: str, l: str) -> Registration | None:
+        """A worker that holds o in a region witnessing RegionOK's existential
+        clause for locus l (assumption T4), or None if there is none.
+
+        Never falls back to a worker outside rho_S(o) or unreachable from l.
+        Ties are broken by node id, so the choice does not depend on the order
+        in which workers registered.
+        """
+        sites = engine.witness_sites(policy, l, o)
+        return next((reg for _, reg in sorted(registry.items())
+                     if o in reg.objects and reg.region in sites), None)
 
     @app.post("/request", response_model=Decision)
     async def request(req: AccessRequestModel) -> Decision:
@@ -65,20 +74,25 @@ def create_central_app(policy: Policy) -> FastAPI:
                 phases=[coord_report], denial=den and den.to_dict(),
             )
 
-        # -- Route to the worker that physically holds the object --
-        target = _route(q.o)
+        # -- Route to a replica site that witnesses RegionOK for q.l (T4) --
+        target = _route(q.o, q.l)
         if target is None:
             raise HTTPException(
                 status_code=503,
-                detail=f"no worker registered for object '{q.o}' "
-                       f"(rho_S={sorted(policy.rho_s.get(q.o, ()))})",
+                detail=f"no registered worker holds object '{q.o}' in a region "
+                       f"reachable from locus '{q.l}' "
+                       f"(witness sites={sorted(engine.witness_sites(policy, q.l, q.o))})",
             )
 
         # -- Phase 2: worker decision (purpose-dependent), at the data provider --
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, transport=transport) as client:
             resp = await client.post(f"{target.url}/enforce", json=req.model_dump())
-            resp.raise_for_status()
-            wd = WorkerDecision(**resp.json())
+        if resp.status_code == 421:   # worker refused: not a witness site (T4)
+            raise HTTPException(status_code=502,
+                                detail=f"worker '{target.node_id}' refused the request: "
+                                       f"{resp.json().get('detail')}")
+        resp.raise_for_status()
+        wd = WorkerDecision(**resp.json())
 
         return Decision(
             authorised=wd.authorised,
